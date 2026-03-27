@@ -46,7 +46,7 @@ _success() { printf '%s\n' "SUCCESS: $*"; }
 # Globals used across steps
 # ----------------------------
 readonly REPO="Fouchger_Homelab_v2"
-readonly REPO_BRANCH="main1"
+readonly REPO_BRANCH="main2"
 readonly REPO_SLUG="Fouchger/${REPO}"
 
 BRANCH="${HOMELAB_BRANCH:-${REPO_BRANCH}}"
