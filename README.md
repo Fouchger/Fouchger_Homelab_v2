@@ -1,1 +1,60 @@
-# Fouchger_Homelab_v2
+# Fouchger Homelab_v2
+
+Homelab automation, implementation planning, and architecture baseline for the Fouchger environment.
+
+## Purpose
+
+This repository is the source-controlled starting point for building and operating the homelab using a coordinated toolchain built around Proxmox, Packer, Terraform, Ansible, Taskfiles, and Proxmox Helper Scripts.
+
+It contains:
+
+- bootstrap and operator entrypoint scripts
+- task definitions for common workflows
+- environment examples and local state scaffolding
+- architecture, build, and implementation documentation under `docs/architecture/`
+
+## Current Scope
+
+The repository currently focuses on:
+
+- production-oriented architecture and migration planning
+- phase-one build documentation for the current hardware reality
+- bootstrap tooling and workflow structure
+- early automation standards for the repo-driven build path
+
+## Quick Start
+
+### Option 1: Bootstrap directly from GitHub
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Fouchger/Fouchger_Homelab_v2/refs/heads/main2/install.sh)"
+```
+
+### Option 2: Run locally from an existing clone
+
+```bash
+./install.sh
+```
+
+## Key Documentation
+
+Primary architecture and build documents are under `docs/architecture/`, including:
+
+- `HOMELAB.md`
+- `ENVIRONMENT-BASELINE.md`
+- `network-design.md`
+- `mikrotik-hap-ax2-design.md`
+- `phase-1-build-plan.md`
+- `ip-allocation-plan.md`
+- `service-catalogue.md`
+- `internet-exposure-design.md`
+- `backup-restore.md`
+- `automation-model.md`
+- `implementation-scaffold.md`
+- `kubernetes-platform-design.md`
+- `naming-standards.md`
+- `INFORMATION-REQUIRED.md`
+
+## Notes
+
+This repository is intended to evolve from architecture-first planning into implementation-aligned automation. Where trade-offs exist, priority should be given to repeatability, recoverability, and clear operational standards.
