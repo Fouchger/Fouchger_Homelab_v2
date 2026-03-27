@@ -1,18 +1,17 @@
 # ##################################################################################################
 # File: tasks/git_gh.Taskfile.yml
 # Purpose:
-#   Install Git and GitHub CLI (gh) if missing, then authenticate gh using a Fine-grained PAT and
-#   configure Git to use gh for GitHub authentication.
+#   GitHub authentication, Git identity setup, and repository credential configuration.
 #
 # Notes:
-#   - Debian/Ubuntu oriented (uses apt). If you run a different distro, adapt the install tasks.
+#   - Git and GitHub CLI installation belong to tasks/apps.Taskfile.yml.
 #   - Git itself does not “authenticate” as an app; access auth is handled via credential helpers.
 #     This Taskfile uses `gh auth setup-git` so Git operations against GitHub work seamlessly.
 #   - Fine-grained PAT guidance:
 #       * Token must be created for the correct owner (user/org) and repositories.
 #       * Ensure it has sufficient permissions for your workflows (for example, repo contents read/write).
 #   - Non-interactive usage:
-#       * Export GITHUB_TOKEN (recommended) or GH_TOKEN prior to running `task git_gh:auth` (or `task git_gh:auth`).
+#       * Export GITHUB_TOKEN (recommended) or GH_TOKEN prior to running `task git_gh:auth`.
 #   - Security:
 #       * Token is never echoed. When prompted, input is hidden.
 #       * Avoid pasting tokens into command history; prefer environment variables or the prompt.
@@ -23,13 +22,11 @@ version: "3"
 silent: true
 
 vars:
-  APT_GET: "apt-get"
   GH_HOST: "github.com"
-  USE_PROXMOX_SCRIPT: '{{.USE_PROXMOX_SCRIPT | default "1"}}'
 
 tasks:
   git_gh:auth:
-    desc: Authenticate gh using a Fine-grained PAT (if needed), then configure git to use gh
+    desc: Authenticate gh using a Fine-grained PAT, then configure Git for GitHub access
     cmds:
       - task: git_gh:auth:gh
       - task: git_gh:auth:git
@@ -44,14 +41,13 @@ tasks:
         set -euo pipefail
 
         if ! command -v gh >/dev/null 2>&1; then
-          echo "gh not installed. Run: task task: apps:install:gh"
+          echo "gh not installed. Run: task apps:install:gh"
           exit 1
         fi
 
         echo "gh is not authenticated for {{.GH_HOST}}."
         echo "Authenticating with a Fine-grained personal access token..."
 
-        # Prefer env var for automation; fall back to hidden prompt.
         TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
         if [ -z "${TOKEN}" ]; then
           read -r -s -p "Enter Fine-grained PAT for {{.GH_HOST}}: " TOKEN
@@ -63,26 +59,22 @@ tasks:
           exit 1
         fi
 
-        # Use --with-token to avoid interactive prompts and keep the token out of arguments.
         printf "%s" "${TOKEN}" | gh auth login -h {{.GH_HOST}} --with-token
 
-        # Best-effort: immediately unset token in this shell.
         unset TOKEN
         echo "gh authentication complete."
 
   git_gh:auth:git:
-    desc: Configure git identity (user.name/user.email) and set up GitHub HTTPS credentials (via gh or credential helper)
+    desc: Configure Git identity and set up GitHub HTTPS credentials via gh or a credential helper
     cmds:
       - |
         set -euo pipefail
 
-        # 1) Ensure git is installed
         if ! command -v git >/dev/null 2>&1; then
-          echo "git not installed. Run:  task: apps:install:git"
+          echo "git not installed. Run: task apps:install:git"
           exit 1
         fi
 
-        # 2) Configure git identity (used for commit metadata)
         CURRENT_NAME="$(git config --global --get user.name || true)"
         CURRENT_EMAIL="$(git config --global --get user.email || true)"
 
@@ -104,19 +96,17 @@ tasks:
           echo "git user.email already set to: ${CURRENT_EMAIL}"
         fi
 
-        # 3) Prefer using gh as the GitHub credential helper if available and authenticated
         if command -v gh >/dev/null 2>&1 && gh auth status -h {{.GH_HOST}} >/dev/null 2>&1; then
           echo "Configuring git to use gh credentials for {{.GH_HOST}}..."
           gh auth setup-git -h {{.GH_HOST}}
-          echo "git auth setup complete (via gh)."
+          echo "git auth setup complete via gh."
           exit 0
         fi
 
-        # 4) Fallback: ask for GitHub HTTPS username + 'password' (Fine-grained PAT recommended)
-        echo "gh is not available/authenticated. Falling back to Git credential storage for {{.GH_HOST}}."
-        echo "Note: For GitHub, use a Fine-grained PAT as the password (not your GitHub account password)."
+        echo "gh is not available or not authenticated. Falling back to Git credential storage for {{.GH_HOST}}."
+        echo "Note: For GitHub, use a Fine-grained PAT as the password rather than your GitHub account password."
 
-        read -r -p "GitHub username (for HTTPS): " GH_USER
+        read -r -p "GitHub username for HTTPS: " GH_USER
         if [ -z "${GH_USER}" ]; then
           echo "No username provided. Aborting."
           exit 1
@@ -124,31 +114,32 @@ tasks:
 
         GH_PASS="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
         if [ -z "${GH_PASS}" ]; then
-          read -r -s -p "GitHub password/token (Fine-grained PAT recommended): " GH_PASS
+          read -r -s -p "GitHub password or token (Fine-grained PAT recommended): " GH_PASS
           echo
         fi
 
         if [ -z "${GH_PASS}" ]; then
-          echo "No password/token provided. Aborting."
+          echo "No password or token provided. Aborting."
           exit 1
         fi
 
-        # Use git's credential helper (whatever is configured on the host) to store credentials.
-        # If no helper is configured, Git may fall back to prompting each time.
-        printf "protocol=https\nhost={{.GH_HOST}}\nusername=%s\npassword=%s\n\n" "${GH_USER}" "${GH_PASS}" \
-          | git credential approve
+        printf "protocol=https
+        host={{.GH_HOST}}
+        username=%s
+        password=%s
 
-        # Best-effort: immediately unset secrets in this shell.
+        " "${GH_USER}" "${GH_PASS}"           | git credential approve
+
         unset GH_PASS
         echo "GitHub credentials stored for HTTPS access to {{.GH_HOST}}."
 
   git_gh:status:
-    desc: Show current git + gh status (quick diagnostics)
+    desc: Show current git and gh status for quick diagnostics
     cmds:
       - |
         set -euo pipefail
         echo "git:  $(command -v git >/dev/null 2>&1 && git --version || echo 'not installed')"
-        echo "gh:   $(command -v gh  >/dev/null 2>&1 && gh --version  | head -n 1 || echo 'not installed')"
+        echo "gh:   $(command -v gh  >/dev/null 2>&1 && gh --version | head -n 1 || echo 'not installed')"
         if command -v gh >/dev/null 2>&1; then
           gh auth status -h {{.GH_HOST}} || true
         fi

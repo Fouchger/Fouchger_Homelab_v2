@@ -4,8 +4,8 @@
 #   Root Taskfile entry point for the homelab repository.
 #
 # Notes:
-#   - Includes reusable task sets for secrets, Proxmox, Terraform, and Ansible.
-#   - Provides service-oriented aliases for identity platform deployment.
+#   - Includes reusable task sets for applications, GitHub auth, and secrets.
+#   - Keeps the primary orchestration task at the top for easier operator use.
 # ================================================================
 
 version: '3'
@@ -24,14 +24,18 @@ includes:
     flatten: true
 
 tasks:
-  default:
-    desc: Show the available secrets tasks
-    cmds:
-      - task --taskfile {{.TASKFILE}} --list
-
   day1:
-    desc: Complete day-1 secrets bootstrap for the homelab
+    desc: Complete the day-1 host bootstrap for the homelab
     cmds:
       - task: apps:bootstrap
       - task: git_gh:auth
-      
+
+  day1:secrets:
+    desc: Complete the day-1 secrets bootstrap for the homelab
+    cmds:
+      - task: secrets:bootstrap
+
+  default:
+    desc: Show the available homelab tasks
+    cmds:
+      - task --taskfile {{.TASKFILE}} --list

@@ -15,5 +15,6 @@ crash.log
 # For built boxes
 *.box
 
-# State folder
+# Repo files
 state/
+.sops.yaml

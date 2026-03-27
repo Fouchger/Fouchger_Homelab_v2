@@ -1,24 +1,21 @@
 # ###########################################################################
 # File: tasks/apps.Taskfile.yml
 # Purpose:
-#   Host bootstrap Taskfile for Fouchger homelab systems.
+#   Application installation Taskfile for Fouchger homelab systems.
 #
 # Scope:
 #   - System package upgrade with apt lock handling
-#   - Python and pipx bootstrap for isolated CLI tooling
-#   - Ansible installation via pipx
-#   - Terraform and Packer installation via the HashiCorp apt repository
+#   - Core host application installation
 #   - code-server installation for browser-based administration
 #
 # Notes:
 #   - Designed for Debian/Ubuntu class systems where apt-get is available.
 #   - Tasks are sequenced deliberately where apt operations are involved to
 #     avoid lock contention from parallel dependency execution.
-#   - HashiCorp repository assets are stored under /etc/apt/keyrings following
-#     current Debian/Ubuntu guidance.
-#   - code-server defaults to the community Proxmox helper script when
-#     USE_PROXMOX_SCRIPT=1. Otherwise it falls back to the official installer.
-#   - This Taskfile is intended to be included by the repository root Taskfile.
+#   - Git and GitHub authentication belong to tasks/git_gh.Taskfile.yml.
+#   - Secrets tooling and secrets bootstrap belong to tasks/secrets.Taskfile.yml.
+#   - This Taskfile keeps install tasks unchanged while removing duplicate task
+#     definitions and cross-domain bootstrap steps.
 # ###########################################################################
 
 version: '3'
@@ -27,12 +24,11 @@ silent: true
 
 vars:
   APT_GET: "apt-get"
-  GH_HOST: "github.com"
   USE_PROXMOX_SCRIPT: '{{.USE_PROXMOX_SCRIPT | default "1"}}'
 
 tasks:
   apps:bootstrap:
-    desc: Install git + gh (if needed), authenticate gh (Fine-grained PAT), and set up git auth via gh
+    desc: Install the core homelab applications and host prerequisites
     cmds:
       - task: apps:install:upgrade
       - task: apps:code-server
@@ -43,15 +39,10 @@ tasks:
       - task: apps:install:gh
       - task: apps:install:age
       - task: apps:install:jq
-      - task: apps:install:curl
       - task: apps:install:openssl
       - task: apps:install:sed
       - task: apps:install:gawk
-      - task: apps:install:ca-certificates
-      - task: apps:install:gnupg
       - task: apps:install:lsb-release
-      - task: apps:install:sops
-      - task: apps:install:openbao
 
   apps:install:upgrade:
     desc: Update and install upgrades
@@ -60,7 +51,7 @@ tasks:
         set -euo pipefail
         echo "Update & Upgrade os..."
         sudo {{.APT_GET}} update
-        sudo {{.APT_GET}} -y upgrade     
+        sudo {{.APT_GET}} -y upgrade
 
   apps:code-server:
     desc: Install code-server using the Proxmox helper script or the official installer
@@ -69,11 +60,6 @@ tasks:
     cmds:
       - |
         set -euo pipefail
-
-        # if command -v code-server >/dev/null 2>&1; then
-        #   echo 'Code Server is already installed.'
-        #   exit 0
-        # fi
 
         if [ '{{.USE_PROXMOX_SCRIPT}}' = '1' ]; then
           echo 'Installing code-server using the community Proxmox helper script'
@@ -132,13 +118,11 @@ tasks:
         set -euo pipefail
 
         sudo install -m 0755 -d /etc/apt/keyrings
-        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-          | sudo gpg --dearmor -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
+        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg           | sudo gpg --dearmor -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
         sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
 
         ARCH="$(dpkg --print-architecture)"
-        echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-          | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+        echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main"           | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
 
         sudo {{.APT_GET}} update
         sudo {{.APT_GET}} install -y gh
@@ -162,16 +146,6 @@ tasks:
           set -euo pipefail
           echo "Installing jq..."
           sudo {{.APT_GET}} install -y jq
-
-  apps:install:curl:
-    desc: Install curl if not installed
-    status:
-      - dpkg -s curl >/dev/null 2>&1
-    cmds:
-      - |
-          set -euo pipefail
-          echo "Installing curl..."
-          sudo {{.APT_GET}} install -y curl
 
   apps:install:openssl:
     desc: Install openssl if not installed
@@ -203,26 +177,6 @@ tasks:
           echo "Installing gawk..."
           sudo {{.APT_GET}} install -y gawk
 
-  apps:install:ca-certificates:
-    desc: Install ca-certificates if not installed
-    status:
-      - dpkg -s ca-certificates >/dev/null 2>&1
-    cmds:
-      - |
-          set -euo pipefail
-          echo "Installing ca-certificates..."
-          sudo {{.APT_GET}} install -y ca-certificates
-
-  apps:install:gnupg:
-    desc: Install gnupg if not installed
-    status:
-      - dpkg -s gnupg >/dev/null 2>&1
-    cmds:
-      - |
-          set -euo pipefail
-          echo "Installing gnupg..."
-          sudo {{.APT_GET}} install -y gnupg
-
   apps:install:lsb-release:
     desc: Install lsb-release if not installed
     status:
@@ -232,69 +186,3 @@ tasks:
           set -euo pipefail
           echo "Installing lsb-release..."
           sudo {{.APT_GET}} install -y lsb-release
-
-  apps:install:sops:
-    desc: Install SOPS on Ubuntu/Debian when not already available
-    preconditions:
-      - sh: 'command -v sudo >/dev/null 2>&1'
-        msg: 'sudo is required but not installed.'
-    cmds:
-      - |
-        set -eu
-        if command -v sops >/dev/null 2>&1; then
-          echo 'sops is already installed'
-          exit 0
-        fi
-        arch="$(dpkg --print-architecture)"
-        version_url='https://github.com/getsops/sops/releases/latest'
-        version="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$version_url" | sed 's#.*/tag/##; s#^v##')"
-        pkg="sops_${version}_${arch}.deb"
-        url="https://github.com/getsops/sops/releases/download/v${version}/${pkg}"
-        curl -fL "$url" -o "/tmp/${pkg}"
-        sudo apt-get install -y "/tmp/${pkg}"
-        sops --version
-
-  apps:install:openbao:
-    desc: Install the latest OpenBao release on Ubuntu/Debian and standardise runtime paths
-    vars:
-      ARCH:
-        sh: |
-          case "$(uname -m)" in
-            x86_64|amd64) echo amd64 ;;
-            aarch64|arm64) echo arm64 ;;
-            *) echo unsupported ;;
-          esac
-      OPENBAO_VERSION:
-        sh: |
-          curl -fsSLI -o /dev/null -w '%{url_effective}' '{{.OPENBAO_RELEASES_URL}}' | sed 's#.*/tag/v##'
-      PKG_FILE: 'openbao_{{.OPENBAO_VERSION}}_linux_{{.ARCH}}.deb'
-      PKG_URL: 'https://github.com/openbao/openbao/releases/download/v{{.OPENBAO_VERSION}}/openbao_{{.OPENBAO_VERSION}}_linux_{{.ARCH}}.deb'
-    preconditions:
-      - sh: '[ "{{.ARCH}}" != "unsupported" ]'
-        msg: 'Unsupported architecture. Only amd64 and arm64 are supported.'
-      - sh: 'command -v curl >/dev/null 2>&1'
-        msg: 'curl is required but not installed.'
-      - sh: 'command -v sudo >/dev/null 2>&1'
-        msg: 'sudo is required but not installed.'
-      - sh: 'command -v sed >/dev/null 2>&1'
-        msg: 'sed is required but not installed.'
-      - sh: '[ -n "{{.OPENBAO_VERSION}}" ]'
-        msg: 'Failed to resolve the latest OpenBao version from GitHub.'
-    cmds:
-      - "echo 'Resolved latest OpenBao version: {{.OPENBAO_VERSION}}'"
-      - echo 'Downloading {{.PKG_FILE}}'
-      - curl -fL '{{.PKG_URL}}' -o '/tmp/{{.PKG_FILE}}'
-      - sudo apt-get update
-      - sudo apt-get install -y '/tmp/{{.PKG_FILE}}'
-      - |
-        set -eu
-        sudo mkdir -p '{{.OPENBAO_INSTALL_DIR}}'
-        if [ -e '{{.OPENBAO_INSTALL_TLS_LINK}}' ] || [ -L '{{.OPENBAO_INSTALL_TLS_LINK}}' ]; then
-          sudo rm -rf '{{.OPENBAO_INSTALL_TLS_LINK}}'
-        fi
-        sudo mkdir -p "$(dirname '{{.OPENBAO_INSTALL_TLS_LINK}}')"
-        sudo ln -s '{{.OPENBAO_INSTALL_DIR}}' '{{.OPENBAO_INSTALL_TLS_LINK}}'
-        echo 'Standardised OpenBao runtime path on {{.OPENBAO_INSTALL_DIR}}'
-      - bao version
-
-
