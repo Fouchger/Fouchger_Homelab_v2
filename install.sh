@@ -617,20 +617,21 @@ _write_update_env_files() {
   local tmp_example=""
   local tmp_env=""
 
-  mkdir -p "${env_dir}" "${example_dir}"
+  # mkdir -p "${env_dir}" "${example_dir}"
+  mkdir -p "${env_dir}"
 
   tmp_example="$(mktemp)"
   tmp_env="$(mktemp)"
 
-  _render_state_env_content example > "${tmp_example}"
+  # _render_state_env_content example > "${tmp_example}"
   _render_state_env_content local > "${tmp_env}"
 
-  install -m 0644 "${tmp_example}" "${example_file}"
+  # install -m 0644 "${tmp_example}" "${example_file}"
   install -m 0600 "${tmp_env}" "${env_file}"
 
   rm -f "${tmp_example}" "${tmp_env}"
 
-  _success "Updated ${example_file}"
+  # _success "Updated ${example_file}"
   _success "Updated ${env_file}"
 }
 
