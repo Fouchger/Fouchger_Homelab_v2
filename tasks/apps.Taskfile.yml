@@ -1,0 +1,133 @@
+# ###########################################################################
+# File: tasks/apps.Taskfile.yml
+# Purpose:
+#   Host bootstrap Taskfile for Fouchger homelab systems.
+#
+# Scope:
+#   - System package upgrade with apt lock handling
+#   - Python and pipx bootstrap for isolated CLI tooling
+#   - Ansible installation via pipx
+#   - Terraform and Packer installation via the HashiCorp apt repository
+#   - code-server installation for browser-based administration
+#
+# Notes:
+#   - Designed for Debian/Ubuntu class systems where apt-get is available.
+#   - Tasks are sequenced deliberately where apt operations are involved to
+#     avoid lock contention from parallel dependency execution.
+#   - HashiCorp repository assets are stored under /etc/apt/keyrings following
+#     current Debian/Ubuntu guidance.
+#   - code-server defaults to the community Proxmox helper script when
+#     USE_PROXMOX_SCRIPT=1. Otherwise it falls back to the official installer.
+#   - This Taskfile is intended to be included by the repository root Taskfile.
+# ###########################################################################
+
+version: '3'
+
+silent: true
+
+vars:
+  APT_GET: "apt-get"
+  GH_HOST: "github.com"
+  USE_PROXMOX_SCRIPT: '{{.USE_PROXMOX_SCRIPT | default "1"}}'
+
+tasks:
+  apps:bootstrap:
+    desc: Install git + gh (if needed), authenticate gh (Fine-grained PAT), and set up git auth via gh
+    cmds:
+      - task: apps:install:upgrade
+      - task: apps:code-server
+      - task: apps:install:ca-certificates
+      - task: apps:install:curl
+      - task: apps:install:gnupg
+      - task: apps:install:git
+      - task: apps:install:gh
+
+  apps:install:upgrade:
+    desc: Update and install upgrades
+    cmds:
+      - |
+        set -euo pipefail
+        echo "Update & Upgrade os..."
+        sudo {{.APT_GET}} update
+        sudo {{.APT_GET}} -y upgrade     
+
+  apps:code-server:
+    desc: Install code-server using the Proxmox helper script or the official installer
+    status:
+      - command -v code-server >/dev/null 2>&1
+    cmds:
+      - |
+        set -euo pipefail
+
+        # if command -v code-server >/dev/null 2>&1; then
+        #   echo 'Code Server is already installed.'
+        #   exit 0
+        # fi
+
+        if [ '{{.USE_PROXMOX_SCRIPT}}' = '1' ]; then
+          echo 'Installing code-server using the community Proxmox helper script'
+          bash -c "$(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/tools/addon/coder-code-server.sh)"
+        else
+          echo 'Installing code-server using the official installer'
+          curl -fsSL https://code-server.dev/install.sh | sh
+        fi
+
+  apps:install:ca-certificates:
+    desc: Install ca-certificates if not installed
+    status:
+      - dpkg -s ca-certificates >/dev/null 2>&1
+    cmds:
+      - |
+          set -euo pipefail
+          echo "Installing ca-certificates..."
+          sudo {{.APT_GET}} install -y ca-certificates
+
+  apps:install:curl:
+    desc: Install curl if not installed
+    status:
+      - command -v curl >/dev/null 2>&1
+    cmds:
+      - |
+        set -euo pipefail
+        echo "Installing curl..."
+        sudo {{.APT_GET}} install -y curl
+
+  apps:install:gnupg:
+    desc: Install gnupg if not installed
+    status:
+      - dpkg -s gnupg >/dev/null 2>&1
+    cmds:
+      - |
+          set -euo pipefail
+          echo "Installing gnupg..."
+          sudo {{.APT_GET}} install -y gnupg
+
+  apps:install:git:
+    desc: Install git if not installed
+    status:
+      - command -v git >/dev/null 2>&1
+    cmds:
+      - |
+        set -euo pipefail
+        echo "Installing git..."
+        sudo {{.APT_GET}} install -y git
+
+  apps:install:gh:
+    desc: Install GitHub CLI (gh) if not installed (via official GitHub apt repo)
+    status:
+      - command -v gh >/dev/null 2>&1
+    cmds:
+      - |
+        set -euo pipefail
+
+        sudo install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+          | sudo gpg --dearmor -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
+        sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+
+        ARCH="$(dpkg --print-architecture)"
+        echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+          | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+
+        sudo {{.APT_GET}} update
+        sudo {{.APT_GET}} install -y gh

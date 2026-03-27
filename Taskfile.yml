@@ -1,0 +1,33 @@
+# ================================================================
+# File: Taskfile.yml
+# Purpose:
+#   Root Taskfile entry point for the homelab repository.
+#
+# Notes:
+#   - Includes reusable task sets for secrets, Proxmox, Terraform, and Ansible.
+#   - Provides service-oriented aliases for identity platform deployment.
+# ================================================================
+
+version: '3'
+
+silent: false
+
+includes:
+  apps:
+    taskfile: ./tasks/apps.Taskfile.yml
+    flatten: true
+  git_gh:
+    taskfile: ./tasks/git_gh.Taskfile.yml
+    flatten: true
+
+tasks:
+  default:
+    desc: Show the available secrets tasks
+    cmds:
+      - task --taskfile {{.TASKFILE}} --list
+
+  day1:
+    desc: Complete day-1 secrets bootstrap for the homelab
+    cmds:
+      - apps:bootstrap
+      
