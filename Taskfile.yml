@@ -19,6 +19,9 @@ includes:
   git_gh:
     taskfile: ./tasks/git_gh.Taskfile.yml
     flatten: true
+  secrets:
+    taskfile: ./tasks/secrets.Taskfile.yml
+    flatten: true
 
 tasks:
   default:

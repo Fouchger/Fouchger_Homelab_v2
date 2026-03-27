@@ -41,6 +41,17 @@ tasks:
       - task: apps:install:gnupg
       - task: apps:install:git
       - task: apps:install:gh
+      - task: apps:install:age
+      - task: apps:install:jq
+      - task: apps:install:curl
+      - task: apps:install:openssl
+      - task: apps:install:sed
+      - task: apps:install:gawk
+      - task: apps:install:ca-certificates
+      - task: apps:install:gnupg
+      - task: apps:install:lsb-release
+      - task: apps:install:sops
+      - task: apps:install:openbao
 
   apps:install:upgrade:
     desc: Update and install upgrades
@@ -131,3 +142,159 @@ tasks:
 
         sudo {{.APT_GET}} update
         sudo {{.APT_GET}} install -y gh
+
+  apps:install:age:
+    desc: Install age if not installed
+    status:
+      - dpkg -s age >/dev/null 2>&1
+    cmds:
+      - |
+          set -euo pipefail
+          echo "Installing age..."
+          sudo {{.APT_GET}} install -y age
+
+  apps:install:jq:
+    desc: Install jq if not installed
+    status:
+      - dpkg -s jq >/dev/null 2>&1
+    cmds:
+      - |
+          set -euo pipefail
+          echo "Installing jq..."
+          sudo {{.APT_GET}} install -y jq
+
+  apps:install:curl:
+    desc: Install curl if not installed
+    status:
+      - dpkg -s curl >/dev/null 2>&1
+    cmds:
+      - |
+          set -euo pipefail
+          echo "Installing curl..."
+          sudo {{.APT_GET}} install -y curl
+
+  apps:install:openssl:
+    desc: Install openssl if not installed
+    status:
+      - dpkg -s openssl >/dev/null 2>&1
+    cmds:
+      - |
+          set -euo pipefail
+          echo "Installing openssl..."
+          sudo {{.APT_GET}} install -y openssl
+
+  apps:install:sed:
+    desc: Install sed if not installed
+    status:
+      - dpkg -s sed >/dev/null 2>&1
+    cmds:
+      - |
+          set -euo pipefail
+          echo "Installing sed..."
+          sudo {{.APT_GET}} install -y sed
+
+  apps:install:gawk:
+    desc: Install gawk if not installed
+    status:
+      - dpkg -s gawk >/dev/null 2>&1
+    cmds:
+      - |
+          set -euo pipefail
+          echo "Installing gawk..."
+          sudo {{.APT_GET}} install -y gawk
+
+  apps:install:ca-certificates:
+    desc: Install ca-certificates if not installed
+    status:
+      - dpkg -s ca-certificates >/dev/null 2>&1
+    cmds:
+      - |
+          set -euo pipefail
+          echo "Installing ca-certificates..."
+          sudo {{.APT_GET}} install -y ca-certificates
+
+  apps:install:gnupg:
+    desc: Install gnupg if not installed
+    status:
+      - dpkg -s gnupg >/dev/null 2>&1
+    cmds:
+      - |
+          set -euo pipefail
+          echo "Installing gnupg..."
+          sudo {{.APT_GET}} install -y gnupg
+
+  apps:install:lsb-release:
+    desc: Install lsb-release if not installed
+    status:
+      - dpkg -s lsb-release >/dev/null 2>&1
+    cmds:
+      - |
+          set -euo pipefail
+          echo "Installing lsb-release..."
+          sudo {{.APT_GET}} install -y lsb-release
+
+  apps:install:sops:
+    desc: Install SOPS on Ubuntu/Debian when not already available
+    preconditions:
+      - sh: 'command -v sudo >/dev/null 2>&1'
+        msg: 'sudo is required but not installed.'
+    cmds:
+      - |
+        set -eu
+        if command -v sops >/dev/null 2>&1; then
+          echo 'sops is already installed'
+          exit 0
+        fi
+        arch="$(dpkg --print-architecture)"
+        version_url='https://github.com/getsops/sops/releases/latest'
+        version="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$version_url" | sed 's#.*/tag/##; s#^v##')"
+        pkg="sops_${version}_${arch}.deb"
+        url="https://github.com/getsops/sops/releases/download/v${version}/${pkg}"
+        curl -fL "$url" -o "/tmp/${pkg}"
+        sudo apt-get install -y "/tmp/${pkg}"
+        sops --version
+
+  apps:install:openbao:
+    desc: Install the latest OpenBao release on Ubuntu/Debian and standardise runtime paths
+    vars:
+      ARCH:
+        sh: |
+          case "$(uname -m)" in
+            x86_64|amd64) echo amd64 ;;
+            aarch64|arm64) echo arm64 ;;
+            *) echo unsupported ;;
+          esac
+      OPENBAO_VERSION:
+        sh: |
+          curl -fsSLI -o /dev/null -w '%{url_effective}' '{{.OPENBAO_RELEASES_URL}}' | sed 's#.*/tag/v##'
+      PKG_FILE: 'openbao_{{.OPENBAO_VERSION}}_linux_{{.ARCH}}.deb'
+      PKG_URL: 'https://github.com/openbao/openbao/releases/download/v{{.OPENBAO_VERSION}}/openbao_{{.OPENBAO_VERSION}}_linux_{{.ARCH}}.deb'
+    preconditions:
+      - sh: '[ "{{.ARCH}}" != "unsupported" ]'
+        msg: 'Unsupported architecture. Only amd64 and arm64 are supported.'
+      - sh: 'command -v curl >/dev/null 2>&1'
+        msg: 'curl is required but not installed.'
+      - sh: 'command -v sudo >/dev/null 2>&1'
+        msg: 'sudo is required but not installed.'
+      - sh: 'command -v sed >/dev/null 2>&1'
+        msg: 'sed is required but not installed.'
+      - sh: '[ -n "{{.OPENBAO_VERSION}}" ]'
+        msg: 'Failed to resolve the latest OpenBao version from GitHub.'
+    cmds:
+      - "echo 'Resolved latest OpenBao version: {{.OPENBAO_VERSION}}'"
+      - echo 'Downloading {{.PKG_FILE}}'
+      - curl -fL '{{.PKG_URL}}' -o '/tmp/{{.PKG_FILE}}'
+      - sudo apt-get update
+      - sudo apt-get install -y '/tmp/{{.PKG_FILE}}'
+      - |
+        set -eu
+        sudo mkdir -p '{{.OPENBAO_INSTALL_DIR}}'
+        if [ -e '{{.OPENBAO_INSTALL_TLS_LINK}}' ] || [ -L '{{.OPENBAO_INSTALL_TLS_LINK}}' ]; then
+          sudo rm -rf '{{.OPENBAO_INSTALL_TLS_LINK}}'
+        fi
+        sudo mkdir -p "$(dirname '{{.OPENBAO_INSTALL_TLS_LINK}}')"
+        sudo ln -s '{{.OPENBAO_INSTALL_DIR}}' '{{.OPENBAO_INSTALL_TLS_LINK}}'
+        echo 'Standardised OpenBao runtime path on {{.OPENBAO_INSTALL_DIR}}'
+      - bao version
+
+
