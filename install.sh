@@ -46,7 +46,7 @@ _success() { printf '%s\n' "SUCCESS: $*"; }
 # Globals used across steps
 # ----------------------------
 readonly REPO="Fouchger_Homelab_v2"
-readonly REPO_BRANCH="main"
+readonly REPO_BRANCH="main1"
 readonly REPO_SLUG="Fouchger/${REPO}"
 
 BRANCH="${HOMELAB_BRANCH:-${REPO_BRANCH}}"
@@ -612,8 +612,8 @@ EOF
 _write_update_env_files() {
   local env_dir="${ROOT_DIR}/state/configs"
   local env_file="${env_dir}/.env"
-  local example_dir="${ROOT_DIR}/config/examples"
-  local example_file="${example_dir}/state.env.example"
+  # local example_dir="${ROOT_DIR}/config/examples"
+  # local example_file="${example_dir}/state.env.example"
   local tmp_example=""
   local tmp_env=""
 
