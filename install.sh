@@ -612,8 +612,8 @@ EOF
 _write_update_env_files() {
   local env_dir="${ROOT_DIR}/state/configs"
   local env_file="${env_dir}/.env"
-  # local example_dir="${ROOT_DIR}/config/examples"
-  # local example_file="${example_dir}/state.env.example"
+  local example_dir="${ROOT_DIR}/config/examples"
+  local example_file="${example_dir}/state.env.example"
   local tmp_example=""
   local tmp_env=""
 
