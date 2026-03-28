@@ -117,8 +117,6 @@ tasks:
 
   lxc:secret:set:root-password:
     desc: Prompt for the shared LXC root password and save it for future runs
-    deps:
-      - task: lxc:dirs
     cmds:
       - |
           # ================================================================
@@ -181,8 +179,6 @@ tasks:
 
   lxc:secret:set:cloudflare-token:
     desc: Prompt for the Cloudflare DNS API token and save it for future runs
-    deps:
-      - task: lxc:dirs
     cmds:
       - |
           # ================================================================
@@ -246,8 +242,6 @@ tasks:
 
   lxc:secret:set:technitium-admin-password:
     desc: Prompt for the Technitium admin password and save it for future runs
-    deps:
-      - task: lxc:dirs
     cmds:
       - |
           # ================================================================
@@ -310,8 +304,6 @@ tasks:
 
   lxc:secret:set:technitium-automation-password:
     desc: Prompt for the Technitium automation password and save it for future runs
-    deps:
-      - task: lxc:dirs
     cmds:
       - |
           # ================================================================
@@ -374,9 +366,6 @@ tasks:
 
   lxc:env:ensure:
     desc: Ensure the baseline LXC configuration exists in state/configs/.env
-    deps:
-      - task: lxc:dirs
-      - task: proxmox:discover
     cmds:
       - |
           # ================================================================
@@ -426,7 +415,7 @@ tasks:
             key="$1"
             current_value="$(grep -E "^${key}=" "${env_file}" | tail -n 1 | cut -d'=' -f2- || true)"
             if [ -z "${current_value}" ]; then
-              echo "Required ${key} is missing from ${env_file}. Run the Proxmox setup flow first." >&2
+              echo "Required ${key} is missing from ${env_file}. Run task day1:proxmox first." >&2
               exit 1
             fi
           }
@@ -502,13 +491,18 @@ tasks:
       - task: lxc:secret:set:technitium-admin-password
       - task: lxc:secret:set:technitium-automation-password
 
-  lxc:defaults:generate:
+  lxc:render:
     desc: Generate app-specific community-scripts defaults and Ansible inventory files
     cmds:
       - task: lxc:dirs
       - task: lxc:env:ensure
       - task: lxc:secrets:ensure
-      - task: ssh:key_gen
+      - task: ssh:generate-key
+      - task: lxc:defaults:generate
+
+  lxc:defaults:generate:
+    desc: Generate app-specific community-scripts defaults and Ansible inventory files
+    cmds:
       - |
           # ================================================================
           # Task: lxc:defaults:generate
@@ -550,7 +544,7 @@ tasks:
           : "${TECHNITIUM_ADMIN_PASSWORD:?TECHNITIUM_ADMIN_PASSWORD must be set in ${secrets_file}}"
           : "${TECHNITIUM_AUTOMATION_PASSWORD:?TECHNITIUM_AUTOMATION_PASSWORD must be set in ${secrets_file}}"
 
-          admin_ssh_key="$(tr -d '\n' < "${ssh_pub}")"
+          admin_ssh_key="$(tr -d '\\n' < "${ssh_pub}")"
 
           cat > "${defaults_dir}/technitiumdns.vars" <<EOF2
           # ================================================================
@@ -689,11 +683,16 @@ tasks:
           chmod 600 "${defaults_dir}/technitiumdns.vars" "${defaults_dir}/alpine-traefik.vars" "${inventory_file}"
           echo 'Generated LXC defaults and Ansible inventory'
 
+  lxc:copy-defaults:
+    desc: Copy generated community-scripts defaults files to the Proxmox host
+    cmds:
+      - task: lxc:defaults:copy
+
   lxc:defaults:copy:
     desc: Copy generated community-scripts defaults files to the Proxmox host
     deps:
-      - task: lxc:defaults:generate
-      - task: ssh:all
+      - task: lxc:render
+      - task: ssh:bootstrap
     cmds:
       - |
           # ================================================================
@@ -731,7 +730,7 @@ tasks:
         - CTID
         - HOSTNAME
     cmds:
-      - task: lxc:defaults:copy
+      - task: lxc:copy-defaults
       - |
           # ================================================================
           # Task: lxc:deploy:one
@@ -752,26 +751,14 @@ tasks:
 
           ssh_target="${PROXMOX_SSH_USER}@${PROXMOX_HOST_IP}"
 
-          if ssh \
-            -i "${ssh_key}" \
-            -o BatchMode=yes \
-            -o StrictHostKeyChecking=accept-new \
-            -o UserKnownHostsFile="${known_hosts}" \
-            "${ssh_target}" \
-            "pct status {{.CTID}} >/dev/null 2>&1"; then
+          if ssh             -i "${ssh_key}"             -o BatchMode=yes             -o StrictHostKeyChecking=accept-new             -o UserKnownHostsFile="${known_hosts}"             "${ssh_target}"             "pct status {{.CTID}} >/dev/null 2>&1"; then
             echo 'Container {{.HOSTNAME}} with CTID {{.CTID}} already exists on Proxmox, skipping create step'
             exit 0
           fi
 
           echo 'Running unattended deployment for {{.HOSTNAME}}...'
 
-          ssh -tt \
-            -i "${ssh_key}" \
-            -o BatchMode=yes \
-            -o StrictHostKeyChecking=accept-new \
-            -o UserKnownHostsFile="${known_hosts}" \
-            "${ssh_target}" \
-            "bash -lc 'set -euo pipefail; test -f /usr/local/community-scripts/defaults/{{.APP_DEFAULTS_FILE}}; export PHS_SILENT=1; export var_ctid={{.CTID}}; export CTID={{.CTID}}; printf \"\n\" | bash <(curl -fsSL {{.SCRIPT_URL}}) 4'"
+          ssh -tt             -i "${ssh_key}"             -o BatchMode=yes             -o StrictHostKeyChecking=accept-new             -o UserKnownHostsFile="${known_hosts}"             "${ssh_target}"             "bash -lc 'set -euo pipefail; test -f /usr/local/community-scripts/defaults/{{.APP_DEFAULTS_FILE}}; export PHS_SILENT=1; export var_ctid={{.CTID}}; export CTID={{.CTID}}; printf "\n" | bash <(curl -fsSL {{.SCRIPT_URL}}) 4'"
 
           echo 'Completed unattended deployment for {{.HOSTNAME}}'
 
@@ -795,18 +782,17 @@ tasks:
           CTID: '{{.TRAEFIK_CID}}'
           HOSTNAME: '{{.TRAEFIK_HOSTNAME}}'
 
+  lxc:configure:technitiumdns:
+    desc: Configure only the Technitium DNS LXC with Ansible
+    cmds:
+      - task: lxc:ansible:configure:technitiumdns
+
   lxc:ansible:configure:technitiumdns:
     desc: Configure only the Technitium DNS LXC with Ansible
     cmds:
       - task: lxc:defaults:generate
       - task: apps:ansible:collections
       - |
-          # ================================================================
-          # Task: lxc:ansible:configure:technitiumdns
-          # Purpose:
-          #   Run only the Technitium DNS application configuration playbook
-          #   against the generated LXC inventory.
-          # ================================================================
           set -euo pipefail
 
           ansible_playbook_cmd=''
@@ -824,18 +810,17 @@ tasks:
 
           "${ansible_playbook_cmd}" -i '{{.ANSIBLE_INVENTORY_FILE}}' ansible/playbooks/technitiumdns.yml
 
+  lxc:configure:traefik:
+    desc: Configure only the Traefik LXC with Ansible
+    cmds:
+      - task: lxc:ansible:configure:traefik
+
   lxc:ansible:configure:traefik:
     desc: Configure only the Traefik LXC with Ansible
     deps:
       - task: lxc:defaults:generate
     cmds:
       - |
-          # ================================================================
-          # Task: lxc:ansible:configure:traefik
-          # Purpose:
-          #   Run only the Traefik application configuration playbook against
-          #   the generated LXC inventory.
-          # ================================================================
           set -euo pipefail
 
           ansible_playbook_cmd=''
@@ -853,9 +838,113 @@ tasks:
 
           "${ansible_playbook_cmd}" -i '{{.ANSIBLE_INVENTORY_FILE}}' ansible/playbooks/traefik.yml
 
+  lxc:configure:all:
+    desc: Configure the baseline LXC application containers with Ansible
+    cmds:
+      - task: lxc:configure:technitiumdns
+      - task: lxc:configure:traefik
+
+  lxc:bootstrap:
+    desc: Run the full baseline LXC workflow from render through deploy and configure
+    cmds:
+      - task: lxc:preflight
+      - task: lxc:render
+      - task: lxc:deploy:all
+      - task: lxc:configure:all
+
+  lxc:preflight:
+    desc: Validate the prerequisites for the baseline LXC workflow
+    cmds:
+      - |
+          set -euo pipefail
+
+          missing=0
+          for tool in ssh scp awk sed; do
+            if ! command -v "${tool}" >/dev/null 2>&1; then
+              echo "Missing required LXC tool: ${tool}" >&2
+              missing=1
+            fi
+          done
+
+          if ! command -v ansible-playbook >/dev/null 2>&1 &&              [ ! -x "${HOME}/.local/bin/ansible-playbook" ] &&              [ ! -x "${HOME}/.local/share/pipx/venvs/ansible/bin/ansible-playbook" ]; then
+            echo 'ansible-playbook is not available. Run task apps:ansible first.' >&2
+            missing=1
+          fi
+
+          [ "${missing}" -eq 0 ]
+          echo 'LXC preflight checks passed.'
+
   lxc:deploy:all:
-    desc: Deploy the baseline LXC application containers only
+    desc: Deploy the baseline app containers using App Defaults
     cmds:
       - task: lxc:deploy:technitiumdns
-      - task: lxc:ansible:configure:technitiumdns
       - task: lxc:deploy:traefik
+
+
+  lxc:destroy:one:
+    internal: true
+    desc: Internal helper to destroy a single repository-managed LXC container
+    requires:
+      vars:
+        - CTID
+        - HOSTNAME
+    cmds:
+      - |
+          # ================================================================
+          # Task: lxc:destroy:one
+          # Purpose:
+          #   Stop and destroy a repository-managed LXC container on the
+          #   Proxmox host when it exists.
+          # ================================================================
+          set -euo pipefail
+
+          env_file='{{.ENV_FILE}}'
+          ssh_key='{{.SSH_KEY_PATH}}'
+          known_hosts='{{.SSH_KNOWN_HOSTS}}'
+
+          if [ ! -f "${env_file}" ]; then
+            echo "Required env file not found: ${env_file}" >&2
+            echo 'Run: task day1:proxmox'
+            exit 1
+          fi
+
+          # shellcheck disable=SC1090
+          . "${env_file}"
+
+          : "${PROXMOX_HOST_IP:?PROXMOX_HOST_IP must be set in ${env_file}}"
+          : "${PROXMOX_SSH_USER:?PROXMOX_SSH_USER must be set in ${env_file}}"
+
+          ssh_target="${PROXMOX_SSH_USER}@${PROXMOX_HOST_IP}"
+
+          if ! ssh -i "${ssh_key}" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${known_hosts}"             "${ssh_target}" "bash -lc 'pct config {{.CTID}} >/dev/null 2>&1'"; then
+            echo 'Container {{.HOSTNAME}} with CTID {{.CTID}} is not present. Skipping destroy step.'
+            exit 0
+          fi
+
+          echo 'Destroying container {{.HOSTNAME}} with CTID {{.CTID}} on Proxmox...'
+
+          ssh -i "${ssh_key}" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${known_hosts}"             "${ssh_target}"             "bash -lc 'set -euo pipefail; if pct status {{.CTID}} 2>/dev/null | grep -q running; then pct shutdown {{.CTID}} --timeout 60 || pct stop {{.CTID}} || true; fi; pct destroy {{.CTID}} --purge 1'"
+
+          echo 'Destroyed container {{.HOSTNAME}}.'
+
+  lxc:destroy:technitiumdns:
+    desc: Destroy the Technitium DNS LXC container when it exists
+    cmds:
+      - task: lxc:destroy:one
+        vars:
+          CTID: '{{.TECHNITIUMDNS_CID}}'
+          HOSTNAME: '{{.TECHNITIUMDNS_HOSTNAME}}'
+
+  lxc:destroy:traefik:
+    desc: Destroy the Traefik LXC container when it exists
+    cmds:
+      - task: lxc:destroy:one
+        vars:
+          CTID: '{{.TRAEFIK_CID}}'
+          HOSTNAME: '{{.TRAEFIK_HOSTNAME}}'
+
+  lxc:destroy:all:
+    desc: Destroy all repository-managed LXC containers
+    cmds:
+      - task: lxc:destroy:traefik
+      - task: lxc:destroy:technitiumdns

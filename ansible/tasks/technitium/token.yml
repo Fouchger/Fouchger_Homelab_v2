@@ -1,0 +1,81 @@
+# ================================================================
+# File: ansible/tasks/technitium/token.yml
+# Purpose:
+#   Resolve an effective Technitium automation API token by reusing the
+#   locally stored token when available or creating a new token when the
+#   local secret is missing.
+# ================================================================
+---
+- name: List active Technitium sessions to check for an existing automation token
+  ansible.builtin.uri:
+    url: "{{ technitium_api_url }}:{{ technitium_api_port }}/api/admin/sessions/list?token={{ technitium_admin_api_token | urlencode }}"
+    method: GET
+    return_content: true
+    validate_certs: false
+  register: technitium_list_sessions_response
+  no_log: true
+
+- name: Detect any existing Technitium automation token sessions by token name
+  ansible.builtin.set_fact:
+    technitium_existing_automation_token_sessions: >-
+      {{
+        (
+          technitium_list_sessions_response.json.response.sessions
+          | default([], true)
+        )
+        | selectattr('username', 'equalto', technitium_automation_username)
+        | selectattr('type', 'equalto', 'ApiToken')
+        | selectattr('tokenName', 'equalto', technitium_automation_token_name)
+        | list
+      }}
+  no_log: true
+
+- name: Create and persist a long-lived Technitium automation API token when the local token is absent
+  when:
+    - (technitium_automation_api_token | default('', true) | string | trim | length) == 0
+  block:
+    - name: Note when an existing Technitium automation token session was detected but no local token value is available
+      ansible.builtin.debug:
+        msg: >-
+          A Technitium automation token session named {{ technitium_automation_token_name }}
+          already exists on the server, but no local token value is available.
+          A fresh token will be created so automation can continue safely.
+      when: (technitium_existing_automation_token_sessions | default([], true) | length) > 0
+
+    - name: Create the Technitium automation API token using the documented administration endpoint
+      ansible.builtin.uri:
+        url: "{{ technitium_api_url }}:{{ technitium_api_port }}/api/admin/sessions/createToken?token={{ technitium_admin_api_token | urlencode }}&user={{ technitium_automation_username | urlencode }}&tokenName={{ technitium_automation_token_name | urlencode }}"
+        method: POST
+        return_content: true
+        validate_certs: false
+      register: technitium_create_automation_token_response
+      failed_when: technitium_create_automation_token_response.json.status | default('error') != 'ok'
+      no_log: true
+
+    - name: Persist the Technitium automation API token into local secrets state
+      ansible.builtin.lineinfile:
+        path: "{{ technitium_local_secrets_file }}"
+        regexp: '^TECHNITIUM_AUTOMATION_API_TOKEN='
+        line: "TECHNITIUM_AUTOMATION_API_TOKEN={{ technitium_create_automation_token_response.json.response.token }}"
+        create: true
+        mode: "0600"
+      delegate_to: localhost
+      no_log: true
+
+    - name: Set the generated Technitium automation API token for this run
+      ansible.builtin.set_fact:
+        technitium_effective_api_token: "{{ technitium_create_automation_token_response.json.response.token }}"
+      no_log: true
+
+- name: Reuse the existing Technitium automation API token when present in secrets
+  ansible.builtin.set_fact:
+    technitium_effective_api_token: "{{ technitium_automation_api_token }}"
+  when: (technitium_automation_api_token | default('', true) | string | trim | length) > 0
+  no_log: true
+
+- name: Fail when the effective Technitium automation API token is unavailable
+  ansible.builtin.fail:
+    msg: >-
+      No effective Technitium automation API token is available for this run.
+      Check local secrets and the Technitium token bootstrap flow.
+  when: (technitium_effective_api_token | default('', true) | string | trim | length) == 0

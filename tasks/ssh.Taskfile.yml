@@ -23,11 +23,23 @@ vars:
   ENV_FILE: 'state/configs/.env'
 
 tasks:
-  ssh:all:
+  ssh:bootstrap:
     desc: "Generate the SSH key and authorise it on the Proxmox host"
     cmds:
-      - task: ssh:key_gen
+      - task: ssh:generate-key
       - task: ssh:authorise:proxmox
+
+  ssh:all:
+    desc: "Compatibility alias for ssh:bootstrap"
+    cmds:
+      - task: ssh:bootstrap
+
+  ssh:generate-key:
+    desc: "Generate a new SSH key pair"
+    status:
+      - test -f {{.SSH_KEY_PATH}}
+    cmds:
+      - task: ssh:key_gen
 
   ssh:key_gen:
     desc: "Generate a new SSH key pair"
@@ -47,14 +59,14 @@ tasks:
           set -euo pipefail
 
           mkdir -p "{{.SSH_DIR}}"
+          chmod 700 "{{.SSH_DIR}}"
 
           read -r -p "SSH user.email (commit author email): " GIT_EMAIL
 
-          ssh-keygen \
-            -t ed25519 \
-            -C "${GIT_EMAIL}" \
-            -f "{{.SSH_KEY_PATH}}" \
-            -N "" >/dev/null
+          ssh-keygen             -t ed25519             -C "${GIT_EMAIL}"             -f "{{.SSH_KEY_PATH}}"             -N "" >/dev/null
+
+          chmod 600 "{{.SSH_KEY_PATH}}"
+          chmod 644 "{{.SSH_PUB_KEY_PATH}}"
 
           echo "SSH key pair generated in {{.SSH_KEY_PATH}} and {{.SSH_PUB_KEY_PATH}}"
 
@@ -63,10 +75,6 @@ tasks:
 
   ssh:authorise:proxmox:
     desc: "Ensure the managed SSH key can access the Proxmox host"
-    deps:
-      - task: proxmox:dirs
-      - task: proxmox:env:ensure
-      - task: ssh:key_gen
     cmds:
       - |
           # ================================================================
@@ -88,14 +96,18 @@ tasks:
 
           if [ ! -f "${env_file}" ]; then
             echo "Required env file not found: ${env_file}"
+            echo 'Run: task proxmox:env:ensure'
             exit 1
           fi
 
           if [ ! -f "${ssh_key}" ] || [ ! -f "${ssh_pub_key}" ]; then
             echo "SSH keypair not found under {{.SSH_DIR}}."
-            echo "Run: task ssh:key_gen"
+            echo "Run: task ssh:generate-key"
             exit 1
           fi
+
+          touch "${known_hosts}"
+          chmod 600 "${known_hosts}"
 
           # shellcheck disable=SC1090
           . "${env_file}"
@@ -107,12 +119,7 @@ tasks:
 
           ssh_target="${PROXMOX_SSH_USER}@${PROXMOX_HOST_IP}"
 
-          if ssh \
-            -i "${ssh_key}" \
-            -o BatchMode=yes \
-            -o ConnectTimeout=5 \
-            "${ssh_target}" \
-            'true' >/dev/null 2>&1; then
+          if ssh             -i "${ssh_key}"             -o BatchMode=yes             -o ConnectTimeout=5             -o StrictHostKeyChecking=accept-new             -o UserKnownHostsFile="${known_hosts}"             "${ssh_target}"             'true' >/dev/null 2>&1; then
             echo "Managed SSH key already authorised on ${PROXMOX_HOST_IP}."
             exit 0
           fi
@@ -120,18 +127,8 @@ tasks:
           echo "Managed SSH key is not yet authorised on ${PROXMOX_HOST_IP}."
           echo "You may be prompted for the remote account password to seed the key."
 
-          ssh-copy-id \
-            -i "${ssh_pub_key}" \
-            -o StrictHostKeyChecking=accept-new \
-            -o UserKnownHostsFile="${known_hosts}" \
-            "${ssh_target}"
+          ssh-copy-id             -i "${ssh_pub_key}"             -o StrictHostKeyChecking=accept-new             -o UserKnownHostsFile="${known_hosts}"             "${ssh_target}"
 
-          ssh \
-            -i "${ssh_key}" \
-            -o BatchMode=yes \
-            -o StrictHostKeyChecking=accept-new \
-            -o UserKnownHostsFile="${known_hosts}" \
-            "${ssh_target}" \
-            'true' >/dev/null 2>&1
+          ssh             -i "${ssh_key}"             -o BatchMode=yes             -o StrictHostKeyChecking=accept-new             -o UserKnownHostsFile="${known_hosts}"             "${ssh_target}"             'true' >/dev/null 2>&1
 
           echo "Managed SSH key successfully authorised on ${PROXMOX_HOST_IP}."

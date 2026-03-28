@@ -1,0 +1,62 @@
+# ================================================================
+# File: ansible/tasks/technitium/records.yml
+# Purpose:
+#   Manage the forward and reverse DNS records used by the homelab and
+#   flush cache after changes.
+# ================================================================
+---
+- name: Ensure primary A and CNAME records are managed in Technitium
+  effectivelywild.technitium_dns.technitium_dns_record:
+    api_url: "{{ technitium_api_url }}"
+    api_port: "{{ technitium_api_port }}"
+    api_token: "{{ technitium_effective_api_token }}"
+    zone: "{{ item.zone }}"
+    name: "{{ item.name }}"
+    type: "{{ item.type }}"
+    ipAddress: "{{ item.ipAddress | default(omit) }}"
+    cname: "{{ item.cname | default(omit) }}"
+    ttl: 3600
+    state: present
+    validate_certs: false
+  loop: "{{ technitium_primary_records }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: Ensure reverse PTR records are managed in Technitium
+  effectivelywild.technitium_dns.technitium_dns_record:
+    api_url: "{{ technitium_api_url }}"
+    api_port: "{{ technitium_api_port }}"
+    api_token: "{{ technitium_effective_api_token }}"
+    zone: "{{ item.zone }}"
+    name: "{{ item.name }}"
+    type: PTR
+    ptrName: "{{ item.ptrName }}"
+    ttl: 3600
+    state: present
+    validate_certs: false
+  loop: "{{ technitium_ptr_records }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: Flush the Technitium cache after configuration changes
+  effectivelywild.technitium_dns.technitium_dns_flush_cache:
+    api_url: "{{ technitium_api_url }}"
+    api_port: "{{ technitium_api_port }}"
+    api_token: "{{ technitium_effective_api_token }}"
+    validate_certs: false
+  no_log: true
+
+- name: Write an operator note for Technitium internal DNS baseline
+  become: true
+  ansible.builtin.copy:
+    dest: /root/TECHNITIUMDNS-NOTES.txt
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      Technitium DNS internal override baseline
+      =========================================
+      Service FQDN: {{ technitium_server_fqdn_value }}
+      Service IP: {{ ansible_host | default(inventory_hostname) }}

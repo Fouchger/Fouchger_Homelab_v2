@@ -1,7 +1,11 @@
 # ================================================================
 # File: ansible/templates/traefik-dynamic.yml.j2
 # Purpose:
-#   Routing configuration for the Traefik dashboard endpoint.
+#   Routing and middleware configuration for the Traefik dashboard.
+# Notes:
+#   - The dashboard is exposed only on HTTPS.
+#   - Optional IP allowlisting can be enabled by defining
+#     traefik_dashboard_ip_allowlist as a list of source ranges.
 # ================================================================
 http:
   routers:
@@ -9,6 +13,11 @@ http:
       rule: Host(`traefik.{{ homelab_domain | default('fouchger.uk') }}`)
       entryPoints:
         - websecure
+      middlewares:
+        - dashboard-security-headers
+{% if (traefik_dashboard_ip_allowlist | default([], true) | length) > 0 %}
+        - dashboard-ip-allowlist
+{% endif %}
       service: api@internal
       tls:
         certResolver: cloudflare
@@ -16,3 +25,22 @@ http:
           - main: {{ homelab_domain | default('fouchger.uk') }}
             sans:
               - '*.{{ homelab_domain | default('fouchger.uk') }}'
+
+  middlewares:
+    dashboard-security-headers:
+      headers:
+        frameDeny: true
+        browserXssFilter: true
+        contentTypeNosniff: true
+        referrerPolicy: no-referrer
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: true
+{% if (traefik_dashboard_ip_allowlist | default([], true) | length) > 0 %}
+    dashboard-ip-allowlist:
+      ipAllowList:
+        sourceRange:
+{% for cidr in traefik_dashboard_ip_allowlist %}
+          - {{ cidr }}
+{% endfor %}
+{% endif %}

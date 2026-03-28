@@ -29,9 +29,6 @@ vars:
   SSH_KEY_PATH: '{{.SSH_KEY_PATH | default (printf "%s/%s" .SSH_DIR .SSH_FILE)}}'
   SSH_KNOWN_HOSTS: '{{.SSH_KNOWN_HOSTS | default (printf "%s/known_hosts" .SSH_DIR)}}'
 
-includes:
-  apps: ./apps.Taskfile.yml
-
 
 tasks:
   packer:dirs:
@@ -484,3 +481,176 @@ tasks:
     cmds:
       - task: packer:vars:render
       - python3 '{{.PACKER_SCRIPTS_DIR}}/build_talos_template.py' --version v1.12.5 --vmid 24042 --template-name tpl-talos-1-12-5
+
+
+  packer:build:ubuntu-22:
+    desc: Compatibility alias for packer:build:ubuntu22
+    cmds:
+      - task: packer:build:ubuntu22
+
+  packer:build:ubuntu-24:
+    desc: Compatibility alias for packer:build:ubuntu24
+    cmds:
+      - task: packer:build:ubuntu24
+
+  packer:build:debian-12:
+    desc: Compatibility alias for packer:build:debian12
+    cmds:
+      - task: packer:build:debian12
+
+  packer:build:debian-13:
+    desc: Compatibility alias for packer:build:debian13
+    cmds:
+      - task: packer:build:debian13
+
+  packer:build:talos-1.12.4:
+    desc: Compatibility alias for packer:build:talos1124
+    cmds:
+      - task: packer:build:talos1124
+
+  packer:build:talos-1.12.5:
+    desc: Compatibility alias for packer:build:talos1125
+    cmds:
+      - task: packer:build:talos1125
+
+  packer:destroy:template:
+    internal: true
+    desc: Internal helper to destroy a single repository-managed Proxmox template VM
+    requires:
+      vars:
+        - TEMPLATE_VMID
+        - TEMPLATE_NAME
+    cmds:
+      - |
+          # ================================================================
+          # Task: packer:destroy:template
+          # Purpose:
+          #   Stop and destroy a repository-managed Proxmox template VM when
+          #   it exists.
+          # ================================================================
+          set -euo pipefail
+
+          env_file='{{.ENV_FILE}}'
+          ssh_key='{{.SSH_KEY_PATH}}'
+          known_hosts='{{.SSH_KNOWN_HOSTS}}'
+
+          if [ ! -f "${env_file}" ]; then
+            echo "Required env file not found: ${env_file}" >&2
+            echo 'Run: task day1:proxmox'
+            exit 1
+          fi
+
+          # shellcheck disable=SC1090
+          . "${env_file}"
+
+          : "${PROXMOX_HOST_IP:?PROXMOX_HOST_IP must be set in ${env_file}}"
+          : "${PROXMOX_SSH_USER:?PROXMOX_SSH_USER must be set in ${env_file}}"
+
+          ssh_target="${PROXMOX_SSH_USER}@${PROXMOX_HOST_IP}"
+
+          if ! ssh -i "${ssh_key}" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${known_hosts}"             "${ssh_target}" "bash -lc 'qm config {{.TEMPLATE_VMID}} >/dev/null 2>&1'"; then
+            echo 'Template {{.TEMPLATE_NAME}} with VMID {{.TEMPLATE_VMID}} is not present. Skipping destroy step.'
+            exit 0
+          fi
+
+          echo 'Destroying template {{.TEMPLATE_NAME}} with VMID {{.TEMPLATE_VMID}} on Proxmox...'
+
+          ssh -i "${ssh_key}" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${known_hosts}"             "${ssh_target}"             "bash -lc 'set -euo pipefail; if qm status {{.TEMPLATE_VMID}} 2>/dev/null | grep -q running; then qm stop {{.TEMPLATE_VMID}} --timeout 60 || true; fi; qm destroy {{.TEMPLATE_VMID}} --purge 1 --destroy-unreferenced-disks 1'"
+
+          echo 'Destroyed template {{.TEMPLATE_NAME}}.'
+
+  packer:destroy:ubuntu22:
+    desc: Destroy the Ubuntu 22 template when it exists
+    cmds:
+      - task: packer:destroy:template
+        vars:
+          TEMPLATE_VMID: 24001
+          TEMPLATE_NAME: ubuntu22
+
+  packer:destroy:ubuntu24:
+    desc: Destroy the Ubuntu 24 template when it exists
+    cmds:
+      - task: packer:destroy:template
+        vars:
+          TEMPLATE_VMID: 24002
+          TEMPLATE_NAME: ubuntu24
+
+  packer:destroy:debian12:
+    desc: Destroy the Debian 12 template when it exists
+    cmds:
+      - task: packer:destroy:template
+        vars:
+          TEMPLATE_VMID: 24021
+          TEMPLATE_NAME: debian12
+
+  packer:destroy:debian13:
+    desc: Destroy the Debian 13 template when it exists
+    cmds:
+      - task: packer:destroy:template
+        vars:
+          TEMPLATE_VMID: 24022
+          TEMPLATE_NAME: debian13
+
+  packer:destroy:talos1124:
+    desc: Destroy the Talos 1.12.4 template when it exists
+    cmds:
+      - task: packer:destroy:template
+        vars:
+          TEMPLATE_VMID: 24041
+          TEMPLATE_NAME: talos1124
+
+  packer:destroy:talos1125:
+    desc: Destroy the Talos 1.12.5 template when it exists
+    cmds:
+      - task: packer:destroy:template
+        vars:
+          TEMPLATE_VMID: 24042
+          TEMPLATE_NAME: talos1125
+
+  packer:destroy:ubuntu-22:
+    desc: Compatibility alias for packer:destroy:ubuntu22
+    cmds:
+      - task: packer:destroy:ubuntu22
+
+  packer:destroy:ubuntu-24:
+    desc: Compatibility alias for packer:destroy:ubuntu24
+    cmds:
+      - task: packer:destroy:ubuntu24
+
+  packer:destroy:debian-12:
+    desc: Compatibility alias for packer:destroy:debian12
+    cmds:
+      - task: packer:destroy:debian12
+
+  packer:destroy:debian-13:
+    desc: Compatibility alias for packer:destroy:debian13
+    cmds:
+      - task: packer:destroy:debian13
+
+  packer:destroy:talos-1.12.4:
+    desc: Compatibility alias for packer:destroy:talos1124
+    cmds:
+      - task: packer:destroy:talos1124
+
+  packer:destroy:talos-1.12.5:
+    desc: Compatibility alias for packer:destroy:talos1125
+    cmds:
+      - task: packer:destroy:talos1125
+
+  packer:destroy:all:
+    desc: Destroy all repository-managed Proxmox templates
+    cmds:
+      - task: packer:destroy:talos1125
+      - task: packer:destroy:talos1124
+      - task: packer:destroy:debian13
+      - task: packer:destroy:debian12
+      - task: packer:destroy:ubuntu24
+      - task: packer:destroy:ubuntu22
+
+  packer:isos:destroy:all:
+    desc: Remove all curated ISO assets from the Proxmox ISO datastore
+    cmds:
+      - task: packer:isos:destroy IMAGE=ubuntu_22
+      - task: packer:isos:destroy IMAGE=ubuntu_24
+      - task: packer:isos:destroy IMAGE=debian_12
+      - task: packer:isos:destroy IMAGE=debian_13

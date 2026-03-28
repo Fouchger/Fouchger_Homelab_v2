@@ -1,0 +1,44 @@
+# ================================================================
+# File: ansible/tasks/technitium/settings.yml
+# Purpose:
+#   Apply the baseline Technitium server settings used by the homelab.
+# ================================================================
+---
+- name: Configure the Technitium DNS server baseline settings
+  ansible.builtin.uri:
+    url: "{{ technitium_api_url }}:{{ technitium_api_port }}/api/settings/set"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      token: "{{ technitium_effective_api_token }}"
+      dnsServerDomain: "{{ technitium_server_fqdn_value }}"
+      defaultRecordTtl: "3600"
+      defaultNsRecordTtl: "14400"
+      defaultSoaRecordTtl: "900"
+      useSoaSerialDateScheme: "false"
+      dnsAppsEnableAutomaticUpdate: "false"
+      dnssecValidation: "true"
+      recursion: AllowOnlyForPrivateNetworks
+      qnameMinimization: "true"
+      randomizeName: "true"
+      saveCache: "true"
+      serveStale: "true"
+      forwarders: "{{ technitium_forwarders | join(',') }}"
+      forwarderProtocol: Udp
+      concurrentForwarding: "true"
+      forwarderRetries: "3"
+      forwarderTimeout: "2000"
+      forwarderConcurrency: "2"
+      loggingType: File
+      logQueries: "false"
+      useLocalTime: "true"
+      maxLogFileDays: "30"
+      enableBlocking: "false"
+      webServiceEnableTls: "true"
+      webServiceEnableHttp3: "false"
+      webServiceUseSelfSignedTlsCertificate: "true"
+      webServiceHttpToTlsRedirect: "false"
+    return_content: true
+    validate_certs: false
+  register: technitium_settings_apply
+  no_log: true
