@@ -27,7 +27,7 @@ The repository currently focuses on:
 ### Option 1: Bootstrap directly from GitHub
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/Fouchger/Fouchger_Homelab_v2/refs/heads/main2/install.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Fouchger/Fouchger_Homelab_v2/refs/heads/main1/install.sh)"
 ```
 
 ### Option 2: Run locally from an existing clone
