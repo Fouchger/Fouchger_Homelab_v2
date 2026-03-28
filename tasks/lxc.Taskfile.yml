@@ -723,6 +723,7 @@ tasks:
   lxc:deploy:one:
     internal: true
     desc: Internal helper to deploy a single community-scripts app container
+    vars:
     requires:
       vars:
         - SCRIPT_URL
@@ -758,7 +759,7 @@ tasks:
 
           echo 'Running unattended deployment for {{.HOSTNAME}}...'
 
-          ssh -tt             -i "${ssh_key}"             -o BatchMode=yes             -o StrictHostKeyChecking=accept-new             -o UserKnownHostsFile="${known_hosts}"             "${ssh_target}"             "bash -lc 'set -euo pipefail; test -f /usr/local/community-scripts/defaults/{{.APP_DEFAULTS_FILE}}; export PHS_SILENT=1; export var_ctid={{.CTID}}; export CTID={{.CTID}}; printf "\n" | bash <(curl -fsSL {{.SCRIPT_URL}}) 4'"
+          ssh -tt             -i "${ssh_key}"             -o BatchMode=yes             -o StrictHostKeyChecking=accept-new             -o UserKnownHostsFile="${known_hosts}"             "${ssh_target}"             "bash -lc 'set -euo pipefail; test -f /usr/local/community-scripts/defaults/{{.APP_DEFAULTS_FILE}}; export PHS_SILENT=1; export var_ctid={{.CTID}}; export CTID={{.CTID}}; bash <(curl -fsSL {{.SCRIPT_URL}}) 4'"
 
           echo 'Completed unattended deployment for {{.HOSTNAME}}'
 

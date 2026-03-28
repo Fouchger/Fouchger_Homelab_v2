@@ -23,6 +23,8 @@ silent: true
 
 vars:
   GH_HOST: "github.com"
+  ENV_FILE: 'state/configs/.env'
+  BOOTSTRAP_SECRETS_FILE: 'state/secrets/bootstrap/bootstrap.secrets.env'
 
 tasks:
   git_gh:bootstrap:
@@ -72,14 +74,15 @@ tasks:
         echo "gh is not authenticated for {{.GH_HOST}}."
         echo "Authenticating with a Fine-grained personal access token..."
 
+        secrets_file='{{.BOOTSTRAP_SECRETS_FILE}}'
         TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
-        if [ -z "${TOKEN}" ]; then
-          read -r -s -p "Enter Fine-grained PAT for {{.GH_HOST}}: " TOKEN
-          echo
+        if [ -z "${TOKEN}" ] && [ -f "${secrets_file}" ]; then
+          TOKEN="$(grep -E '^GITHUB_TOKEN=' "${secrets_file}" | tail -n 1 | cut -d'=' -f2- || true)"
         fi
 
         if [ -z "${TOKEN}" ]; then
-          echo "No token provided. Aborting."
+          echo "Missing GITHUB_TOKEN in environment or ${secrets_file}."
+          echo 'Run: task inputs:gather'
           exit 1
         fi
 
@@ -99,25 +102,32 @@ tasks:
           exit 1
         fi
 
-        CURRENT_NAME="$(git config --global --get user.name || true)"
-        CURRENT_EMAIL="$(git config --global --get user.email || true)"
+        env_file='{{.ENV_FILE}}'
+        secrets_file='{{.BOOTSTRAP_SECRETS_FILE}}'
 
-        if [ -z "${CURRENT_NAME}" ]; then
-          read -r -p "Git user.name (commit author name): " GIT_NAME
-          if [ -n "${GIT_NAME}" ]; then
-            git config --global user.name "${GIT_NAME}"
-          fi
-        else
-          echo "git user.name already set to: ${CURRENT_NAME}"
+        if [ ! -f "${env_file}" ]; then
+          echo "Required env file not found: ${env_file}"
+          echo 'Run: task inputs:gather'
+          exit 1
         fi
 
-        if [ -z "${CURRENT_EMAIL}" ]; then
-          read -r -p "Git user.email (commit author email): " GIT_EMAIL
-          if [ -n "${GIT_EMAIL}" ]; then
-            git config --global user.email "${GIT_EMAIL}"
-          fi
+        # shellcheck disable=SC1090
+        . "${env_file}"
+
+        if [ -n "${GIT_USER_NAME:-}" ]; then
+          git config --global user.name "${GIT_USER_NAME}"
         else
-          echo "git user.email already set to: ${CURRENT_EMAIL}"
+          echo "Missing GIT_USER_NAME in ${env_file}."
+          echo 'Run: task inputs:gather'
+          exit 1
+        fi
+
+        if [ -n "${GIT_USER_EMAIL:-}" ]; then
+          git config --global user.email "${GIT_USER_EMAIL}"
+        else
+          echo "Missing GIT_USER_EMAIL in ${env_file}."
+          echo 'Run: task inputs:gather'
+          exit 1
         fi
 
         if command -v gh >/dev/null 2>&1 && gh auth status -h {{.GH_HOST}} >/dev/null 2>&1; then
@@ -130,20 +140,21 @@ tasks:
         echo "gh is not available or not authenticated. Falling back to Git credential storage for {{.GH_HOST}}."
         echo "Note: For GitHub, use a Fine-grained PAT as the password rather than your GitHub account password."
 
-        read -r -p "GitHub username for HTTPS: " GH_USER
+        GH_USER="${GITHUB_USERNAME:-}"
         if [ -z "${GH_USER}" ]; then
-          echo "No username provided. Aborting."
+          echo "Missing GITHUB_USERNAME in ${env_file}."
+          echo 'Run: task inputs:gather'
           exit 1
         fi
 
         GH_PASS="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
-        if [ -z "${GH_PASS}" ]; then
-          read -r -s -p "GitHub password or token (Fine-grained PAT recommended): " GH_PASS
-          echo
+        if [ -z "${GH_PASS}" ] && [ -f "${secrets_file}" ]; then
+          GH_PASS="$(grep -E '^GITHUB_TOKEN=' "${secrets_file}" | tail -n 1 | cut -d'=' -f2- || true)"
         fi
 
         if [ -z "${GH_PASS}" ]; then
-          echo "No password or token provided. Aborting."
+          echo "Missing GITHUB_TOKEN in environment or ${secrets_file}."
+          echo 'Run: task inputs:gather'
           exit 1
         fi
 

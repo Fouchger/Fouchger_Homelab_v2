@@ -53,17 +53,32 @@ tasks:
           #   Generate an ed25519 SSH key pair for repository and host access.
           #
           # Notes:
-          #   - Prompts for an email address to embed as the key comment.
+          #   - Reads the key comment from state/configs/.env.
           #   - Skips execution if the private key already exists.
           # ================================================================
           set -euo pipefail
 
+          env_file='{{.ENV_FILE}}'
+
+          if [ ! -f "${env_file}" ]; then
+            echo "Required env file not found: ${env_file}"
+            echo 'Run: task inputs:gather'
+            exit 1
+          fi
+
+          # shellcheck disable=SC1090
+          . "${env_file}"
+
+          if [ -z "${GIT_USER_EMAIL:-}" ]; then
+            echo "Missing GIT_USER_EMAIL in ${env_file}."
+            echo 'Run: task inputs:gather'
+            exit 1
+          fi
+
           mkdir -p "{{.SSH_DIR}}"
           chmod 700 "{{.SSH_DIR}}"
 
-          read -r -p "SSH user.email (commit author email): " GIT_EMAIL
-
-          ssh-keygen             -t ed25519             -C "${GIT_EMAIL}"             -f "{{.SSH_KEY_PATH}}"             -N "" >/dev/null
+          ssh-keygen             -t ed25519             -C "${GIT_USER_EMAIL}"             -f "{{.SSH_KEY_PATH}}"             -N "" >/dev/null
 
           chmod 600 "{{.SSH_KEY_PATH}}"
           chmod 644 "{{.SSH_PUB_KEY_PATH}}"

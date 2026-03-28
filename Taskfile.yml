@@ -34,6 +34,9 @@ includes:
   packer:
     taskfile: ./tasks/packer.Taskfile.yml
     flatten: true
+  inputs:
+    taskfile: ./tasks/inputs.Taskfile.yml
+    flatten: true
 
 tasks:
   default:
@@ -51,6 +54,7 @@ tasks:
     desc: Complete the day-1 host bootstrap for the homelab
     deps: [preflight]
     cmds:
+      - task: inputs:gather
       - task: day1:operator
       - task: proxmox:dirs
       - task: proxmox:env:ensure

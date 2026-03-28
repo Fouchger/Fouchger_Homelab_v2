@@ -58,6 +58,7 @@ vars:
   PVE_ROLE_PRIVS: '{{.PVE_ROLE_PRIVS | default "Datastore.AllocateSpace,Datastore.AllocateTemplate,Datastore.Audit,VM.Allocate,VM.Audit,VM.Clone,VM.Console,VM.Config.CDROM,VM.Config.Cloudinit,VM.Config.CPU,VM.Config.Disk,VM.Config.HWType,VM.Config.Memory,VM.Config.Network,VM.Config.Options,VM.PowerMgmt"}}'
   SOPS_CONFIG_FILE: '{{.ROOT_DIR}}/.sops.yaml'
   AGE_KEYS_FILE: '{{.SECRETS_DIR}}/age/keys.txt'
+  BOOTSTRAP_SECRETS_FILE: 'state/secrets/bootstrap/bootstrap.secrets.env'
 
 tasks:
   proxmox:bootstrap:
@@ -133,32 +134,28 @@ tasks:
           pve_privs='{{.PVE_ROLE_PRIVS}}'
           pve_userid="${pve_user}@${PVE_REALM}"
 
+          bootstrap_secrets_file='{{.BOOTSTRAP_SECRETS_FILE}}'
+
           add_password='n'
-          echo
-          printf '%s' 'Create or rotate a Proxmox password for this user as well? [y/N]: ' > /dev/tty
-          read -r add_password < /dev/tty || true
+          password=''
+
+          if [ -f "${bootstrap_secrets_file}" ]; then
+            # shellcheck disable=SC1090
+            . "${bootstrap_secrets_file}"
+            add_password="${PVE_CREATE_PASSWORD:-n}"
+            password="${PVE_PASSWORD:-}"
+          fi
+
           add_password="$(printf '%s' "${add_password:-n}" | tr '[:upper:]' '[:lower:]')"
 
-          password=''
-          if [ "${add_password}" = 'y' ] || [ "${add_password}" = 'yes' ]; then
-            while true; do
-              printf '%s' "Enter password for ${pve_userid}: " > /dev/tty
-              read -r -s password < /dev/tty
-              echo > /dev/tty
-              printf '%s' "Confirm password for ${pve_userid}: " > /dev/tty
-              read -r -s password_confirm < /dev/tty
-              echo > /dev/tty
-
-              if [ -z "${password}" ]; then
-                echo 'Password cannot be empty when password creation is enabled.'
-                continue
-              fi
-              if [ "${password}" != "${password_confirm}" ]; then
-                echo 'Passwords did not match. Please try again.'
-                continue
-              fi
-              break
-            done
+          if [ "${add_password}" = 'y' ] || [ "${add_password}" = 'yes' ] || [ "${add_password}" = 'true' ] || [ "${add_password}" = '1' ]; then
+            if [ -z "${password}" ]; then
+              echo "Missing PVE_PASSWORD in ${bootstrap_secrets_file}."
+              echo 'Run: task inputs:gather'
+              exit 1
+            fi
+          else
+            password=''
           fi
 
           shell_quote() {
@@ -365,61 +362,28 @@ tasks:
           touch "${env_file}"
           chmod 600 "${env_file}" || true
 
-          upsert_env() {
+          require_env() {
             key="$1"
-            value="$2"
-            file="$3"
-            if grep -qE "^${key}=" "${file}"; then
-              awk -v key="${key}" -v value="${value}" '
-                BEGIN { updated = 0 }
-                $0 ~ "^" key "=" {
-                  print key "=" value
-                  updated = 1
-                  next
-                }
-                { print }
-                END {
-                  if (updated == 0) {
-                    print key "=" value
-                  }
-                }
-              ' "${file}" > "${file}.tmp"
-              mv "${file}.tmp" "${file}"
-            else
-              printf '%s=%s\n' "${key}" "${value}" >> "${file}"
-            fi
-          }
-
-          prompt_env() {
-            key="$1"
-            default_value="$2"
             current_value="$(grep -E "^${key}=" "${env_file}" | tail -n 1 | cut -d'=' -f2- || true)"
-            if [ -n "${current_value}" ]; then
-              printf '%s' "${current_value}"
-              return 0
+            if [ -z "${current_value}" ]; then
+              echo "Missing ${key} in ${env_file}." >&2
+              echo 'Run: task inputs:gather' >&2
+              exit 1
             fi
-
-            echo "Missing ${key} in ${env_file}." > /dev/tty
-            printf '%s' "Enter value for ${key} [${default_value}]: " > /dev/tty
-            read -r response < /dev/tty || true
-            if [ -z "${response}" ]; then
-              response="${default_value}"
-            fi
-            upsert_env "${key}" "${response}" "${env_file}"
-            printf '%s' "${response}"
+            printf '%s' "${current_value}"
           }
 
-          proxmox_host_ip="$(prompt_env PROXMOX_HOST_IP '{{.DEFAULT_PROXMOX_HOST_IP}}')"
-          proxmox_host="$(prompt_env PROXMOX_HOST '{{.DEFAULT_PROXMOX_HOST}}')"
-          proxmox_ssh_user="$(prompt_env PROXMOX_SSH_USER '{{.DEFAULT_PROXMOX_SSH_USER}}')"
-          pve_realm="$(prompt_env PVE_REALM '{{.DEFAULT_PVE_REALM}}')"
-          proxmox_template_datastore="$(prompt_env PROXMOX_TEMPLATE_DATASTORE '{{.DEFAULT_PROXMOX_TEMPLATE_DATASTORE}}')"
-          proxmox_vm_datastore="$(prompt_env PROXMOX_VM_DATASTORE '{{.DEFAULT_PROXMOX_VM_DATASTORE}}')"
-          proxmox_snippets_datastore="$(prompt_env PROXMOX_SNIPPETS_DATASTORE '{{.DEFAULT_PROXMOX_SNIPPETS_DATASTORE}}')"
-          proxmox_insecure_tls="$(prompt_env PROXMOX_INSECURE_TLS '{{.DEFAULT_PROXMOX_INSECURE_TLS}}')"
+          proxmox_host_ip="$(require_env PROXMOX_HOST_IP)"
+          proxmox_host="$(require_env PROXMOX_HOST)"
+          proxmox_ssh_user="$(require_env PROXMOX_SSH_USER)"
+          pve_realm="$(require_env PVE_REALM)"
+          proxmox_template_datastore="$(require_env PROXMOX_TEMPLATE_DATASTORE)"
+          proxmox_vm_datastore="$(require_env PROXMOX_VM_DATASTORE)"
+          proxmox_snippets_datastore="$(require_env PROXMOX_SNIPPETS_DATASTORE)"
+          proxmox_insecure_tls="$(require_env PROXMOX_INSECURE_TLS)"
 
           echo
-          echo 'Using Proxmox configuration:'
+          echo 'Using Proxmox configuration from state/configs/.env:'
           echo "  PROXMOX_HOST_IP=${proxmox_host_ip}"
           echo "  PROXMOX_HOST=${proxmox_host}"
           echo "  PROXMOX_SSH_USER=${proxmox_ssh_user}"
