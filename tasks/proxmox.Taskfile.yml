@@ -66,12 +66,12 @@ tasks:
   proxmox:api-user:
     desc: Create or refresh the Proxmox automation user, role, ACL, and API token
     cmds:
-      - task: secrets:init
+      # - task: secrets:init
       - task: proxmox:tools:check
-      - task: proxmox:dirs
-      - task: proxmox:env:ensure
-      - task: ssh:all
-      - task: proxmox:discover
+      # - task: proxmox:dirs
+      # - task: proxmox:env:ensure
+      # - task: ssh:all
+      # - task: proxmox:discover
       - |
           # ############################################################
           # Task: proxmox:api-user
@@ -418,8 +418,6 @@ tasks:
   proxmox:discover:
     desc: Discover Proxmox node metadata over SSH and write it to state/configs/.env
     deps:
-      - proxmox:dirs
-      - proxmox:env:ensure
       - ssh:authorise:proxmox
     cmds:
       - |
