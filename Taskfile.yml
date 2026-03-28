@@ -19,8 +19,14 @@ includes:
   git_gh:
     taskfile: ./tasks/git_gh.Taskfile.yml
     flatten: true
+  proxmox:
+    taskfile: ./tasks/proxmox.Taskfile.yml
+    flatten: true
   secrets:
     taskfile: ./tasks/secrets.Taskfile.yml
+    flatten: true
+  ssh:
+    taskfile: ./tasks/ssh.Taskfile.yml
     flatten: true
 
 tasks:
@@ -30,6 +36,8 @@ tasks:
       - task: secrets:bootstrap
       - task: apps:bootstrap
       - task: git_gh:auth
+      - task: ssh:all
+      - task: proxmox:api-user
 
   day1:secrets:
     desc: Complete the day-1 secrets bootstrap for the homelab
