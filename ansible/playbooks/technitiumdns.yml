@@ -1,0 +1,631 @@
+# ================================================================
+# File: ansible/playbooks/technitiumdns.yml
+# Purpose:
+#   Install, harden, and configure the Technitium DNS LXC for
+#   production-style homelab use.
+#
+# Notes:
+#   - The first play bootstraps Python and systemd service state.
+#   - The second play configures the Technitium API surface, security,
+#     server settings, zones, and records.
+#   - Cloudflare remains authoritative for public DNS.
+#   - Technitium provides internal DNS overrides for LAN clients only.
+#   - DHCP remains on MikroTik for now, so only fixed infrastructure PTRs
+#     are managed here.
+#   - API token bootstrap follows Technitium's documented administration
+#     endpoints for session listing and token creation.
+#   - Zone discovery and zone creation use the admin token to avoid
+#     permission issues during bootstrap.
+#   - Record management uses the automation token after explicit
+#     zone-level permissions are granted.
+#   - The effectivelywild.technitium_dns record module expects fully
+#     qualified record names rather than short relative labels.
+# ================================================================
+---
+- name: Bootstrap Python on the Technitium DNS LXC
+  hosts: lxc_technitiumdns
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Ensure Python is available for Ansible modules
+      ansible.builtin.raw: |
+        if command -v python3 >/dev/null 2>&1; then
+          exit 0
+        fi
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update
+        apt-get install -y python3 python3-apt
+      changed_when: false
+
+- name: Configure the Technitium DNS service host
+  hosts: lxc_technitiumdns
+  become: true
+  gather_facts: true
+
+  vars:
+    technitium_working_directory: /opt/technitium/dns
+    technitium_config_directory: /etc/dns
+    technitium_systemd_unit_path: /etc/systemd/system/dns-server.service
+    technitium_candidate_units:
+      - dns-server.service
+      - technitium-dns.service
+      - technitiumdns.service
+      - dns.service
+
+  tasks:
+    - name: Ensure required operating system packages are installed
+      ansible.builtin.apt:
+        name:
+          - curl
+          - ca-certificates
+        state: present
+        update_cache: true
+
+    - name: Ensure the Technitium data directory exists
+      ansible.builtin.file:
+        path: "{{ technitium_config_directory }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Check whether the Technitium application directory exists
+      ansible.builtin.stat:
+        path: "{{ technitium_working_directory }}/DnsServerApp.dll"
+      register: technitium_app_dll
+
+    - name: Fail when Technitium DNS is not installed in the expected location
+      ansible.builtin.fail:
+        msg: >-
+          Technitium DNS Server does not appear to be installed at
+          {{ technitium_working_directory }}/DnsServerApp.dll.
+          Check what the community script installed before running this
+          configuration task again.
+      when: not technitium_app_dll.stat.exists
+
+    - name: Gather service facts
+      ansible.builtin.service_facts:
+
+    - name: Select an existing Technitium service unit when present
+      ansible.builtin.set_fact:
+        technitium_service_name: "{{ item }}"
+      loop: "{{ technitium_candidate_units }}"
+      when:
+        - technitium_service_name is not defined
+        - item in ansible_facts.services
+
+    - name: Install the upstream-compatible Technitium systemd unit when no suitable unit exists
+      ansible.builtin.copy:
+        dest: "{{ technitium_systemd_unit_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Technitium DNS Server
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          WorkingDirectory=/opt/technitium/dns
+          ExecStart=/usr/bin/dotnet /opt/technitium/dns/DnsServerApp.dll /etc/dns
+          Restart=always
+          RestartSec=10
+          SyslogIdentifier=dns-server
+          LimitNOFILE=65536
+
+          [Install]
+          WantedBy=multi-user.target
+      register: technitium_unit_file
+      when: technitium_service_name is not defined
+
+    - name: Set the Technitium service name to the managed upstream-compatible unit
+      ansible.builtin.set_fact:
+        technitium_service_name: dns-server.service
+      when: technitium_service_name is not defined
+
+    - name: Reload systemd when the Technitium unit file changed
+      ansible.builtin.systemd:
+        daemon_reload: true
+      when:
+        - technitium_unit_file is defined
+        - technitium_unit_file.changed
+
+    - name: Ensure the Technitium DNS service is enabled and started
+      ansible.builtin.systemd:
+        name: "{{ technitium_service_name }}"
+        enabled: true
+        state: started
+
+    - name: Wait for the Technitium web console to respond on port 5380
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        port: 5380
+        delay: 2
+        timeout: 60
+        state: started
+
+- name: Configure Technitium DNS via API for internal homelab overrides
+  hosts: lxc_technitiumdns
+  gather_facts: false
+  collections:
+    - effectivelywild.technitium_dns
+
+  vars:
+    repo_root_dir: "{{ playbook_dir | dirname | dirname }}"
+    technitium_local_secrets_file: "{{ repo_root_dir }}/state/secrets/lxc/lxc.secrets.env"
+    technitium_api_url: "http://{{ ansible_host | default(inventory_hostname) }}"
+    technitium_api_port: 5380
+    technitium_domain: "{{ homelab_domain }}"
+    technitium_reverse_zone_name: 88.168.192.in-addr.arpa
+    technitium_reverse_zone_network: 192.168.88.0/24
+    technitium_server_fqdn_value: "{{ technitium_server_fqdn | default('technitiumdns.' ~ homelab_domain) }}"
+    technitium_admin_username: admin
+    technitium_default_admin_password: admin
+    technitium_automation_display_name: Technitium Ansible Automation
+    technitium_automation_token_name: ansible-automation
+
+    technitium_forwarders:
+      - 1.1.1.1
+      - 1.0.0.1
+
+    technitium_section_permissions:
+      - section: Dashboard
+        canView: true
+        canModify: false
+        canDelete: false
+      - section: Zones
+        canView: true
+        canModify: true
+        canDelete: true
+      - section: Settings
+        canView: true
+        canModify: true
+        canDelete: false
+      - section: Cache
+        canView: true
+        canModify: true
+        canDelete: true
+
+    technitium_zone_permissions:
+      - "{{ technitium_domain }}"
+      - "{{ technitium_reverse_zone_name }}"
+
+    technitium_primary_records:
+      - name: "{{ technitium_server_fqdn_value }}"
+        zone: "{{ technitium_domain }}"
+        type: A
+        ipAddress: "{{ ansible_host }}"
+      - name: "dns01.{{ technitium_domain }}"
+        zone: "{{ technitium_domain }}"
+        type: CNAME
+        cname: "{{ technitium_server_fqdn_value }}"
+      - name: "traefik.{{ technitium_domain }}"
+        zone: "{{ technitium_domain }}"
+        type: A
+        ipAddress: "{{ hostvars['traefik'].ansible_host }}"
+      - name: "*.apps.{{ technitium_domain }}"
+        zone: "{{ technitium_domain }}"
+        type: A
+        ipAddress: "{{ hostvars['traefik'].ansible_host }}"
+      - name: "router01.{{ technitium_domain }}"
+        zone: "{{ technitium_domain }}"
+        type: A
+        ipAddress: "{{ hostvars['router01.fouchger.uk'].ansible_host | default('192.168.88.1') }}"
+      - name: "proxmox01.{{ technitium_domain }}"
+        zone: "{{ technitium_domain }}"
+        type: A
+        ipAddress: "{{ hostvars['proxmox01.fouchger.uk'].ansible_host | default('192.168.88.250') }}"
+      - name: "omv01.{{ technitium_domain }}"
+        zone: "{{ technitium_domain }}"
+        type: A
+        ipAddress: "{{ hostvars['omv01.fouchger.uk'].ansible_host | default('192.168.88.251') }}"
+
+    technitium_ptr_records:
+      - name: "2.{{ technitium_reverse_zone_name }}"
+        zone: "{{ technitium_reverse_zone_name }}"
+        ptrName: "{{ technitium_server_fqdn_value }}"
+      - name: "1.{{ technitium_reverse_zone_name }}"
+        zone: "{{ technitium_reverse_zone_name }}"
+        ptrName: "router01.{{ technitium_domain }}"
+      - name: "250.{{ technitium_reverse_zone_name }}"
+        zone: "{{ technitium_reverse_zone_name }}"
+        ptrName: "proxmox01.{{ technitium_domain }}"
+      - name: "251.{{ technitium_reverse_zone_name }}"
+        zone: "{{ technitium_reverse_zone_name }}"
+        ptrName: "omv01.{{ technitium_domain }}"
+
+  tasks:
+    - name: Check whether the local Technitium secrets file exists
+      ansible.builtin.stat:
+        path: "{{ technitium_local_secrets_file }}"
+      delegate_to: localhost
+      register: technitium_local_secrets_file_stat
+
+    - name: Attempt login with the desired Technitium admin password
+      ansible.builtin.uri:
+        url: "{{ technitium_api_url }}:{{ technitium_api_port }}/api/user/login"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          user: "{{ technitium_admin_username }}"
+          pass: "{{ technitium_admin_password }}"
+          includeInfo: "true"
+        return_content: true
+        validate_certs: false
+      register: technitium_admin_login_desired
+      failed_when: false
+      no_log: true
+
+    - name: Attempt login with the default Technitium admin password when required
+      ansible.builtin.uri:
+        url: "{{ technitium_api_url }}:{{ technitium_api_port }}/api/user/login"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          user: "{{ technitium_admin_username }}"
+          pass: "{{ technitium_default_admin_password }}"
+          includeInfo: "true"
+        return_content: true
+        validate_certs: false
+      register: technitium_admin_login_default
+      failed_when: false
+      when: technitium_admin_login_desired.json.status | default('error') != 'ok'
+      no_log: true
+
+    - name: Fail when Technitium admin authentication could not be established
+      ansible.builtin.fail:
+        msg: >-
+          Unable to authenticate to Technitium using either the configured
+          admin password or the default admin/admin bootstrap credentials.
+          Check connectivity and the stored secret values.
+      when:
+        - technitium_admin_login_desired.json.status | default('error') != 'ok'
+        - technitium_admin_login_default is not defined or technitium_admin_login_default.json.status | default('error') != 'ok'
+
+    - name: Change the default Technitium admin password during first bootstrap
+      ansible.builtin.uri:
+        url: "{{ technitium_api_url }}:{{ technitium_api_port }}/api/user/changePassword"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          token: "{{ technitium_admin_login_default.json.token }}"
+          pass: "{{ technitium_default_admin_password }}"
+          newPass: "{{ technitium_admin_password }}"
+          iterations: "100000"
+        return_content: true
+        validate_certs: false
+      register: technitium_change_admin_password
+      when:
+        - technitium_admin_login_desired.json.status | default('error') != 'ok'
+        - technitium_admin_login_default is defined
+        - technitium_admin_login_default.json.status | default('error') == 'ok'
+      no_log: true
+
+    - name: Re-login with the desired Technitium admin password after bootstrap password change
+      ansible.builtin.uri:
+        url: "{{ technitium_api_url }}:{{ technitium_api_port }}/api/user/login"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          user: "{{ technitium_admin_username }}"
+          pass: "{{ technitium_admin_password }}"
+          includeInfo: "true"
+        return_content: true
+        validate_certs: false
+      register: technitium_admin_login_final
+      when:
+        - technitium_change_admin_password is defined
+        - technitium_change_admin_password.json.status | default('error') == 'ok'
+      no_log: true
+
+    - name: Set the working Technitium admin session token
+      ansible.builtin.set_fact:
+        technitium_admin_api_token: >-
+          {{
+            technitium_admin_login_final.json.token
+            if (
+              technitium_admin_login_final is defined
+              and technitium_admin_login_final.json.status | default('error') == 'ok'
+            )
+            else technitium_admin_login_desired.json.token
+          }}
+      no_log: true
+
+    - name: Ensure the Technitium automation user exists
+      effectivelywild.technitium_dns.technitium_dns_create_user:
+        api_url: "{{ technitium_api_url }}"
+        api_port: "{{ technitium_api_port }}"
+        api_token: "{{ technitium_admin_api_token }}"
+        username: "{{ technitium_automation_username }}"
+        password: "{{ technitium_automation_password }}"
+        displayName: "{{ technitium_automation_display_name }}"
+        validate_certs: false
+      register: technitium_create_automation_user
+      failed_when: >-
+        technitium_create_automation_user.failed | default(false)
+        and 'already exists' not in (technitium_create_automation_user.msg | default('') | lower)
+      no_log: true
+
+    - name: Ensure the Technitium automation user properties are aligned
+      effectivelywild.technitium_dns.technitium_dns_set_user_details:
+        api_url: "{{ technitium_api_url }}"
+        api_port: "{{ technitium_api_port }}"
+        api_token: "{{ technitium_admin_api_token }}"
+        username: "{{ technitium_automation_username }}"
+        displayName: "{{ technitium_automation_display_name }}"
+        newPassword: "{{ technitium_automation_password }}"
+        sessionTimeoutSeconds: 3600
+        disabled: false
+        validate_certs: false
+      no_log: true
+
+    - name: Grant the automation user section access
+      effectivelywild.technitium_dns.technitium_dns_set_permission_details:
+        api_url: "{{ technitium_api_url }}"
+        api_port: "{{ technitium_api_port }}"
+        api_token: "{{ technitium_admin_api_token }}"
+        section: "{{ item.section }}"
+        userPermissions:
+          - username: "{{ technitium_automation_username }}"
+            canView: "{{ item.canView }}"
+            canModify: "{{ item.canModify }}"
+            canDelete: "{{ item.canDelete }}"
+        validate_certs: false
+      loop: "{{ technitium_section_permissions }}"
+      loop_control:
+        label: "{{ item.section }}"
+
+    - name: List active Technitium sessions to check for an existing automation token
+      ansible.builtin.uri:
+        url: "{{ technitium_api_url }}:{{ technitium_api_port }}/api/admin/sessions/list?token={{ technitium_admin_api_token | urlencode }}"
+        method: GET
+        return_content: true
+        validate_certs: false
+      register: technitium_list_sessions_response
+      no_log: true
+
+    - name: Detect any existing Technitium automation token sessions by token name
+      ansible.builtin.set_fact:
+        technitium_existing_automation_token_sessions: >-
+          {{
+            (
+              technitium_list_sessions_response.json.response.sessions
+              | default([], true)
+            )
+            | selectattr('username', 'equalto', technitium_automation_username)
+            | selectattr('type', 'equalto', 'ApiToken')
+            | selectattr('tokenName', 'equalto', technitium_automation_token_name)
+            | list
+          }}
+      no_log: true
+
+    - name: Create and persist a long-lived Technitium automation API token when absent
+      when:
+        - (technitium_automation_api_token | default('', true) | string | trim | length) == 0
+        - (technitium_existing_automation_token_sessions | default([], true) | length) == 0
+      block:
+        - name: Create the Technitium automation API token using the documented administration endpoint
+          ansible.builtin.uri:
+            url: "{{ technitium_api_url }}:{{ technitium_api_port }}/api/admin/sessions/createToken?token={{ technitium_admin_api_token | urlencode }}&user={{ technitium_automation_username | urlencode }}&tokenName={{ technitium_automation_token_name | urlencode }}"
+            method: POST
+            return_content: true
+            validate_certs: false
+          register: technitium_create_automation_token_response
+          failed_when: technitium_create_automation_token_response.json.status | default('error') != 'ok'
+          no_log: true
+
+        - name: Persist the Technitium automation API token into local secrets state
+          ansible.builtin.lineinfile:
+            path: "{{ technitium_local_secrets_file }}"
+            regexp: '^TECHNITIUM_AUTOMATION_API_TOKEN='
+            line: "TECHNITIUM_AUTOMATION_API_TOKEN={{ technitium_create_automation_token_response.json.response.token }}"
+            create: true
+            mode: "0600"
+          delegate_to: localhost
+          no_log: true
+
+        - name: Set the generated Technitium automation API token for this run
+          ansible.builtin.set_fact:
+            technitium_effective_api_token: "{{ technitium_create_automation_token_response.json.response.token }}"
+          no_log: true
+
+    - name: Reuse the existing Technitium automation API token when present in secrets
+      ansible.builtin.set_fact:
+        technitium_effective_api_token: "{{ technitium_automation_api_token }}"
+      when: (technitium_automation_api_token | default('', true) | string | trim | length) > 0
+      no_log: true
+
+    - name: Fail when the effective Technitium automation API token is unavailable
+      ansible.builtin.fail:
+        msg: >-
+          No effective Technitium automation API token is available for this run.
+          Check local secrets and the Technitium token bootstrap flow.
+      when: (technitium_effective_api_token | default('', true) | string | trim | length) == 0
+
+    - name: Configure the Technitium DNS server baseline settings
+      ansible.builtin.uri:
+        url: "{{ technitium_api_url }}:{{ technitium_api_port }}/api/settings/set"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          token: "{{ technitium_effective_api_token }}"
+          dnsServerDomain: "{{ technitium_server_fqdn_value }}"
+          defaultRecordTtl: "3600"
+          defaultNsRecordTtl: "14400"
+          defaultSoaRecordTtl: "900"
+          useSoaSerialDateScheme: "false"
+          dnsAppsEnableAutomaticUpdate: "false"
+          dnssecValidation: "true"
+          recursion: AllowOnlyForPrivateNetworks
+          qnameMinimization: "true"
+          randomizeName: "true"
+          saveCache: "true"
+          serveStale: "true"
+          forwarders: "{{ technitium_forwarders | join(',') }}"
+          forwarderProtocol: Udp
+          concurrentForwarding: "true"
+          forwarderRetries: "3"
+          forwarderTimeout: "2000"
+          forwarderConcurrency: "2"
+          loggingType: File
+          logQueries: "false"
+          useLocalTime: "true"
+          maxLogFileDays: "30"
+          enableBlocking: "false"
+          webServiceEnableTls: "true"
+          webServiceEnableHttp3: "false"
+          webServiceUseSelfSignedTlsCertificate: "true"
+          webServiceHttpToTlsRedirect: "false"
+        return_content: true
+        validate_certs: false
+      register: technitium_settings_apply
+      no_log: true
+
+    - name: List authoritative zones currently hosted on Technitium
+      ansible.builtin.uri:
+        url: "{{ technitium_api_url }}:{{ technitium_api_port }}/api/zones/list?token={{ technitium_admin_api_token | urlencode }}"
+        method: GET
+        return_content: true
+        validate_certs: false
+      register: technitium_zone_list_response
+      failed_when: technitium_zone_list_response.json.status | default('error') != 'ok'
+      no_log: true
+
+    - name: Build a normalised list of existing Technitium zone names
+      ansible.builtin.set_fact:
+        technitium_existing_zone_names: >-
+          {{
+            technitium_zone_list_response.json.response.zones
+            | default([], true)
+            | map(attribute='name')
+            | list
+          }}
+      no_log: true
+
+    - name: Ensure the internal override zone exists
+      ansible.builtin.uri:
+        url: "{{ technitium_api_url }}:{{ technitium_api_port }}/api/zones/create"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          token: "{{ technitium_admin_api_token }}"
+          zone: "{{ technitium_domain }}"
+          type: Primary
+        return_content: true
+        validate_certs: false
+      register: technitium_create_primary_zone
+      failed_when: technitium_create_primary_zone.json.status | default('error') != 'ok'
+      changed_when: technitium_create_primary_zone.json.status | default('') == 'ok'
+      when: technitium_domain not in technitium_existing_zone_names
+      no_log: true
+
+    - name: Ensure the local reverse zone exists
+      ansible.builtin.uri:
+        url: "{{ technitium_api_url }}:{{ technitium_api_port }}/api/zones/create"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          token: "{{ technitium_admin_api_token }}"
+          zone: "{{ technitium_reverse_zone_network }}"
+          type: Primary
+        return_content: true
+        validate_certs: false
+      register: technitium_create_reverse_zone
+      failed_when: technitium_create_reverse_zone.json.status | default('error') != 'ok'
+      changed_when: technitium_create_reverse_zone.json.status | default('') == 'ok'
+      when: technitium_reverse_zone_name not in technitium_existing_zone_names
+      no_log: true
+
+    - name: Grant the automation user modify access to managed zones
+      ansible.builtin.uri:
+        url: "{{ technitium_api_url }}:{{ technitium_api_port }}/api/zones/permissions/set"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          token: "{{ technitium_admin_api_token }}"
+          zone: "{{ item }}"
+          userPermissions: "{{ technitium_automation_username }}|true|true|true"
+        return_content: true
+        validate_certs: false
+      register: technitium_zone_permissions_result
+      failed_when: technitium_zone_permissions_result.json.status | default('error') != 'ok'
+      loop: "{{ technitium_zone_permissions }}"
+      loop_control:
+        label: "{{ item }}"
+      no_log: true
+
+    - name: Ensure primary A and CNAME records are managed in Technitium
+      effectivelywild.technitium_dns.technitium_dns_record:
+        api_url: "{{ technitium_api_url }}"
+        api_port: "{{ technitium_api_port }}"
+        api_token: "{{ technitium_effective_api_token }}"
+        zone: "{{ item.zone }}"
+        name: "{{ item.name }}"
+        type: "{{ item.type }}"
+        ipAddress: "{{ item.ipAddress | default(omit) }}"
+        cname: "{{ item.cname | default(omit) }}"
+        ttl: 3600
+        state: present
+        validate_certs: false
+      loop: "{{ technitium_primary_records }}"
+      loop_control:
+        label: "{{ item.name }}"
+      no_log: true
+
+    - name: Ensure reverse PTR records are managed in Technitium
+      effectivelywild.technitium_dns.technitium_dns_record:
+        api_url: "{{ technitium_api_url }}"
+        api_port: "{{ technitium_api_port }}"
+        api_token: "{{ technitium_effective_api_token }}"
+        zone: "{{ item.zone }}"
+        name: "{{ item.name }}"
+        type: PTR
+        ptrName: "{{ item.ptrName }}"
+        ttl: 3600
+        state: present
+        validate_certs: false
+      loop: "{{ technitium_ptr_records }}"
+      loop_control:
+        label: "{{ item.name }}"
+      no_log: true
+
+    - name: Flush the Technitium cache after configuration changes
+      effectivelywild.technitium_dns.technitium_dns_flush_cache:
+        api_url: "{{ technitium_api_url }}"
+        api_port: "{{ technitium_api_port }}"
+        api_token: "{{ technitium_effective_api_token }}"
+        validate_certs: false
+      no_log: true
+
+    - name: Write an operator note for Technitium internal DNS baseline
+      become: true
+      ansible.builtin.copy:
+        dest: /root/TECHNITIUMDNS-NOTES.txt
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          Technitium DNS internal override baseline
+          =========================================
+          Service FQDN: {{ technitium_server_fqdn_value }}
+          Service IP: {{ ansible_host | default(inventory_hostname) }}
+          Public authority: Cloudflare
+          Internal override zone: {{ technitium_domain }}
+          Reverse zone: {{ technitium_reverse_zone_name }}
+
+          Managed forward records:
+            - {{ technitium_server_fqdn_value }} -> {{ ansible_host | default(inventory_hostname) }}
+            - dns01.{{ technitium_domain }} -> {{ technitium_server_fqdn_value }}
+            - traefik.{{ technitium_domain }} -> {{ hostvars['traefik'].ansible_host }}
+            - *.apps.{{ technitium_domain }} -> {{ hostvars['traefik'].ansible_host }}
+            - router01.{{ technitium_domain }} -> {{ hostvars['router01.fouchger.uk'].ansible_host | default('192.168.88.1') }}
+            - proxmox01.{{ technitium_domain }} -> {{ hostvars['proxmox01.fouchger.uk'].ansible_host | default('192.168.88.250') }}
+            - omv01.{{ technitium_domain }} -> {{ hostvars['omv01.fouchger.uk'].ansible_host | default('192.168.88.251') }}
+
+          Managed reverse records:
+            - 2.{{ technitium_reverse_zone_name }} -> {{ technitium_server_fqdn_value }}
+            - 1.{{ technitium_reverse_zone_name }} -> router01.{{ technitium_domain }}
+            - 250.{{ technitium_reverse_zone_name }} -> proxmox01.{{ technitium_domain }}
+            - 251.{{ technitium_reverse_zone_name }} -> omv01.{{ technitium_domain }}

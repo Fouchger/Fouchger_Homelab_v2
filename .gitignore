@@ -1,20 +1,49 @@
-# Cache objects
-packer_cache/
-
-# Crash log
-crash.log
-
-# https://www.packer.io/guides/hcl/variables
-# Exclude all .pkrvars.hcl files, which are likely to contain sensitive data, 
-# such as password, private keys, and other secrets. These should not be part of 
-# version control as they are data points which are potentially sensitive and 
-# subject to change depending on the environment.
-#
-*.pkrvars.hcl
-
-# For built boxes
-*.box
 
 # Repo files
 state/
 .sops.yaml
+
+# This file specifies intentionally untracked files that Git should ignore.
+# See: https://git-scm.com/docs/gitignore
+
+# --- Terraform ---
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+*.tfvars.json
+crash.log
+crash.*.log
+# Ignore local override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# --- Packer ---
+packer_cache/
+output-*/
+crash.log
+*.pkrvars.hcl
+*.box
+
+# --- Ansible ---
+.ansible-lint
+# If using local roles/collections
+/roles/
+/collections/
+# If using specific inventory files
+inventory.ini
+*.retry
+
+# --- Taskfile ---
+.task/
+task-output.log
+
+# --- General & Secrets ---
+.env
+.DS_Store
+*.log
+.idea/
+.vscode/
+

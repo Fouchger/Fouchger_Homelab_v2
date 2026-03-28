@@ -1,0 +1,33 @@
+# ================================================================
+# File: ansible/templates/traefik.yml.j2
+# Purpose:
+#   Install configuration for the Traefik LXC using the file provider
+#   and Cloudflare DNS challenge for ACME.
+# ================================================================
+api:
+  dashboard: true
+
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+certificatesResolvers:
+  cloudflare:
+    acme:
+      email: {{ cloudflare_acme_email | default('admin@fouchger.uk') }}
+      storage: /var/lib/traefik/acme.json
+      dnsChallenge:
+        provider: cloudflare
+        resolvers:
+          - 1.1.1.1:53
+          - 8.8.8.8:53
+
+log:
+  level: INFO
