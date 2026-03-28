@@ -27,6 +27,7 @@ tasks:
   day1:
     desc: Complete the day-1 host bootstrap for the homelab
     cmds:
+      - task: secrets:bootstrap
       - task: apps:bootstrap
       - task: git_gh:auth
 
