@@ -52,6 +52,8 @@ tasks:
     deps: [preflight]
     cmds:
       - task: day1:operator
+      - task: proxmox:dirs
+      - task: proxmox:env:ensure
       - task: day1:access
       - task: day1:proxmox
 
