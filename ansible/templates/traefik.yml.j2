@@ -1,0 +1,50 @@
+# ================================================================
+# File: ansible/templates/traefik.yml.j2
+# Purpose:
+#   Install configuration for the Traefik LXC using the file provider,
+#   HTTPS redirection, and Cloudflare DNS challenge for ACME.
+# Notes:
+#   - The web entrypoint only exists to redirect traffic to websecure.
+#   - The dashboard remains enabled, but routing protections are applied
+#     in the dynamic configuration file.
+# ================================================================
+api:
+  dashboard: true
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+certificatesResolvers:
+  cloudflare:
+    acme:
+      email: {{ cloudflare_acme_email | default('admin@fouchger.uk') }}
+      storage: /var/lib/traefik/acme.json
+      dnsChallenge:
+        provider: cloudflare
+        resolvers:
+{% for resolver in traefik_dns_resolvers | default(['1.1.1.1:53', '8.8.8.8:53']) %}
+          - {{ resolver }}
+{% endfor %}
+
+log:
+  level: INFO
+
+accessLog: {}
+
+global:
+  sendAnonymousUsage: false
+  checkNewVersion: false

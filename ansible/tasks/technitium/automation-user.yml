@@ -1,0 +1,50 @@
+# ================================================================
+# File: ansible/tasks/technitium/automation-user.yml
+# Purpose:
+#   Ensure the Technitium automation account exists and has the required
+#   section-level permissions for homelab management.
+# ================================================================
+---
+- name: Ensure the Technitium automation user exists
+  effectivelywild.technitium_dns.technitium_dns_create_user:
+    api_url: "{{ technitium_api_url }}"
+    api_port: "{{ technitium_api_port }}"
+    api_token: "{{ technitium_admin_api_token }}"
+    username: "{{ technitium_automation_username }}"
+    password: "{{ technitium_automation_password }}"
+    displayName: "{{ technitium_automation_display_name }}"
+    validate_certs: false
+  register: technitium_create_automation_user
+  failed_when: >-
+    technitium_create_automation_user.failed | default(false)
+    and 'already exists' not in (technitium_create_automation_user.msg | default('') | lower)
+  no_log: true
+
+- name: Ensure the Technitium automation user properties are aligned
+  effectivelywild.technitium_dns.technitium_dns_set_user_details:
+    api_url: "{{ technitium_api_url }}"
+    api_port: "{{ technitium_api_port }}"
+    api_token: "{{ technitium_admin_api_token }}"
+    username: "{{ technitium_automation_username }}"
+    displayName: "{{ technitium_automation_display_name }}"
+    newPassword: "{{ technitium_automation_password }}"
+    sessionTimeoutSeconds: 3600
+    disabled: false
+    validate_certs: false
+  no_log: true
+
+- name: Grant the automation user section access
+  effectivelywild.technitium_dns.technitium_dns_set_permission_details:
+    api_url: "{{ technitium_api_url }}"
+    api_port: "{{ technitium_api_port }}"
+    api_token: "{{ technitium_admin_api_token }}"
+    section: "{{ item.section }}"
+    userPermissions:
+      - username: "{{ technitium_automation_username }}"
+        canView: "{{ item.canView }}"
+        canModify: "{{ item.canModify }}"
+        canDelete: "{{ item.canDelete }}"
+    validate_certs: false
+  loop: "{{ technitium_section_permissions }}"
+  loop_control:
+    label: "{{ item.section }}"

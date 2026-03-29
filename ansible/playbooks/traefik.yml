@@ -1,0 +1,163 @@
+---
+# ================================================================
+# File: ansible/playbooks/traefik.yml
+# Purpose:
+#   Configure only the Traefik LXC according to the current Traefik
+#   install and routing configuration guidance.
+#
+# Notes:
+#   - Traefik separates install configuration from routing configuration.
+#   - This playbook manages only the file provider, Cloudflare DNS
+#     challenge settings, and the OpenRC service for the Traefik host.
+#   - Configuration validation runs before any restart to avoid applying
+#     broken configuration to the live ingress service.
+# ================================================================
+
+- name: Bootstrap Python on the Traefik LXC
+  hosts: lxc_traefik
+  gather_facts: false
+  tasks:
+    - name: Ensure Python is available for Ansible modules
+      raw: |
+        set -e
+        if ! command -v python3 >/dev/null 2>&1; then
+          apk add --no-cache python3 py3-pip bash curl ca-certificates sudo openssh
+        fi
+      changed_when: false
+
+- name: Configure the Traefik service
+  hosts: lxc_traefik
+  gather_facts: true
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  handlers:
+    - name: Restart Traefik via OpenRC
+      ansible.builtin.shell: |
+        set -e
+        rc-service traefik restart
+      args:
+        executable: /bin/sh
+      listen: Restart Traefik via OpenRC
+  tasks:
+    - name: Ensure Traefik configuration directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /etc/traefik
+        - /etc/traefik/dynamic
+        - /var/lib/traefik
+
+    - name: Check whether the ACME storage file already exists
+      ansible.builtin.stat:
+        path: /var/lib/traefik/acme.json
+      register: traefik_acme_storage
+      changed_when: false
+
+    - name: Create the ACME storage file only when it is missing
+      ansible.builtin.file:
+        path: /var/lib/traefik/acme.json
+        state: touch
+        mode: '0600'
+      when: not (traefik_acme_storage.stat.exists | default(false))
+
+    - name: Ensure the ACME storage file permissions remain restricted
+      ansible.builtin.file:
+        path: /var/lib/traefik/acme.json
+        state: file
+        mode: '0600'
+
+    - name: Install the Cloudflare token environment file for Traefik
+      ansible.builtin.copy:
+        dest: /etc/traefik/cloudflare.env
+        mode: '0600'
+        content: |
+          CF_DNS_API_TOKEN={{ cloudflare_dns_api_token }}
+      notify: Restart Traefik via OpenRC
+
+    - name: Ensure the Traefik OpenRC defaults file loads the Cloudflare token
+      ansible.builtin.copy:
+        dest: /etc/conf.d/traefik
+        mode: '0644'
+        content: |
+          # ================================================================
+          # File: /etc/conf.d/traefik
+          # Purpose:
+          #   Load environment variables required by the Traefik OpenRC
+          #   service wrapper on Alpine Linux.
+          # ================================================================
+          export CF_DNS_API_TOKEN={{ cloudflare_dns_api_token }}
+      notify: Restart Traefik via OpenRC
+
+    - name: Render the Traefik install configuration
+      ansible.builtin.template:
+        src: ../templates/traefik.yml.j2
+        dest: /etc/traefik/traefik.yml
+        mode: '0644'
+      notify: Restart Traefik via OpenRC
+
+    - name: Render the Traefik routing configuration
+      ansible.builtin.template:
+        src: ../templates/traefik-dynamic.yml.j2
+        dest: /etc/traefik/dynamic/{{ homelab_domain | default('fouchger.uk') }}.yml
+        mode: '0644'
+      notify: Restart Traefik via OpenRC
+
+    - name: Inspect Traefik CLI capabilities before validation
+      ansible.builtin.command:
+        argv:
+          - traefik
+          - --help
+      register: traefik_cli_help
+      changed_when: false
+
+    - name: Validate the rendered Traefik configuration when supported by the installed CLI
+      ansible.builtin.command:
+        argv:
+          - traefik
+          - check-config
+          - --configFile=/etc/traefik/traefik.yml
+      changed_when: false
+      when: "'check-config' in (traefik_cli_help.stdout | default(''))"
+
+    - name: Skip Traefik config validation when the installed CLI does not support it
+      ansible.builtin.debug:
+        msg: >-
+          The installed Traefik CLI does not expose the check-config subcommand.
+          Skipping explicit config validation and continuing with handler-driven service management.
+      when: "'check-config' not in (traefik_cli_help.stdout | default(''))"
+
+    - name: Check whether the Traefik OpenRC service is already enabled in the default runlevel
+      ansible.builtin.stat:
+        path: /etc/runlevels/default/traefik
+      register: traefik_openrc_default_runlevel
+      changed_when: false
+
+    - name: Ensure the Traefik OpenRC service is enabled
+      ansible.builtin.command:
+        argv:
+          - rc-update
+          - add
+          - traefik
+          - default
+      when: not (traefik_openrc_default_runlevel.stat.exists | default(false))
+      register: traefik_openrc_enable
+      changed_when: true
+
+    - name: Ensure the Traefik OpenRC service is running
+      ansible.builtin.shell: |
+        set -e
+        if rc-service traefik status >/dev/null 2>&1; then
+          echo 'already-running'
+        else
+          rc-service traefik start
+          echo 'started'
+        fi
+      args:
+        executable: /bin/sh
+      register: traefik_openrc_start
+      changed_when: "'started' in traefik_openrc_start.stdout"
+
+    - name: Apply any pending Traefik restart after validated changes
+      ansible.builtin.meta: flush_handlers

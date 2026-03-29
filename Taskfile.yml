@@ -28,23 +28,99 @@ includes:
   ssh:
     taskfile: ./tasks/ssh.Taskfile.yml
     flatten: true
+  lxc:
+    taskfile: ./tasks/lxc.Taskfile.yml
+    flatten: true
+  packer:
+    taskfile: ./tasks/packer.Taskfile.yml
+    flatten: true
+  inputs:
+    taskfile: ./tasks/inputs.Taskfile.yml
+    flatten: true
 
 tasks:
-  day1:
-    desc: Complete the day-1 host bootstrap for the homelab
-    cmds:
-      - task: secrets:bootstrap
-      - task: apps:bootstrap
-      - task: git_gh:auth
-      - task: ssh:all
-      - task: proxmox:api-user
-
-  day1:secrets:
-    desc: Complete the day-1 secrets bootstrap for the homelab
-    cmds:
-      - task: secrets:bootstrap
-
   default:
     desc: Show the available homelab tasks
     cmds:
       - task --taskfile {{.TASKFILE}} --list
+
+  preflight:
+    desc: Validate repository context before running orchestration tasks
+    silent: true
+    cmds:
+      - test -f .root_marker || { echo "Run this task from the homelab repository root"; exit 1; }
+
+  day1:
+    desc: Complete the day-1 host bootstrap for the homelab
+    deps: [preflight]
+    cmds:
+      - task: inputs:gather
+      - task: day1:operator
+      - task: proxmox:dirs
+      - task: proxmox:env:ensure
+      - task: day1:access
+      - task: day1:proxmox
+
+  day1:operator:
+    desc: Bootstrap local workstation tooling, secrets, and GitHub access
+    deps: [preflight]
+    cmds:
+      - task: secrets:bootstrap
+      - task: apps:bootstrap
+      - task: git_gh:bootstrap
+
+  day1:access:
+    desc: Prepare SSH access for homelab operations
+    deps: [preflight]
+    cmds:
+      - task: ssh:bootstrap
+
+  day1:proxmox:
+    desc: Bootstrap Proxmox API access and host discovery
+    deps: [preflight]
+    cmds:
+      - task: proxmox:bootstrap
+
+  day1:secrets:
+    desc: Complete the day-1 secrets bootstrap for the homelab
+    deps: [preflight]
+    cmds:
+      - task: secrets:bootstrap
+
+
+  homelab:bootstrap:
+    desc: Bootstrap the validated homelab workflow through operator, Proxmox, and LXC configuration
+    deps: [preflight]
+    cmds:
+      - task: day1
+      - task: lxc:bootstrap
+
+  homelab:destroy:
+    desc: Destroy all LXC containers and Proxmox templates created by this repository
+    deps: [preflight]
+    cmds:
+      - task: lxc:destroy:all
+      - task: packer:destroy:all
+
+  homelab:reset:
+    desc: Destroy all repository-managed runtime objects and remove generated local state for a clean rebuild
+    deps: [preflight]
+    cmds:
+      - task: homelab:destroy
+      - task: state:clean:generated
+
+  state:clean:generated:
+    desc: Remove generated local artefacts so the repository can be re-initialised from scratch
+    deps: [preflight]
+    cmds:
+      - |
+          # ================================================================
+          # Task: state:clean:generated
+          # Purpose:
+          #   Remove generated local artefacts while preserving hand-entered
+          #   secrets and durable bootstrap material.
+          # ================================================================
+          set -euo pipefail
+          rm -rf state/configs/lxc/generated                  packer/generated
+          find state -type f \( -name '.proxmox-bootstrap.sh' -o -name 'inventory-lxc.yml' -o -name '*.part' \) -delete 2>/dev/null || true
+          echo 'Removed generated local artefacts under state/configs/lxc/generated and packer/generated'

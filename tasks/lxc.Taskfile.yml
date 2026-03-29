@@ -1,0 +1,951 @@
+# ================================================================
+# File: tasks/lxc.Taskfile.yml
+# Purpose:
+#   Create and configure baseline LXC application containers on the
+#   Proxmox host using the community-scripts unattended defaults system
+#   and targeted Ansible post-configuration.
+#
+# Notes:
+#   - This workflow keeps non-secret runtime values in state/configs/.env.
+#   - Secrets are sourced from state/secrets/lxc/lxc.secrets.env.
+#   - App defaults are generated locally, copied to the Proxmox host, and
+#     stored under /usr/local/community-scripts/defaults/.
+#   - Containers use fixed CTIDs starting at 23000 and static IPv4 addresses
+#     within 192.168.88.2-20.
+#   - The gateway defaults to 192.168.88.1.
+#   - The SSH key used is the public key from the machine where Task runs.
+#   - Ansible inventory includes password bootstrap access so first-run
+#     configuration does not depend on SSH key injection succeeding.
+# ================================================================
+
+version: '3'
+
+silent: true
+
+vars:
+  ENV_FILE: 'state/configs/.env'
+  SECRETS_FILE: 'state/secrets/lxc/lxc.secrets.env'
+  GENERATED_DIR: 'state/configs/lxc/generated'
+  DEFAULTS_DIR: '{{.GENERATED_DIR}}/defaults'
+  ANSIBLE_INVENTORY_FILE: '{{.GENERATED_DIR}}/inventory-lxc.yml'
+  SSH_DIR: '{{.SSH_DIR | default (printf "%s/.ssh" .HOME)}}'
+  SSH_FILE: '{{.SSH_FILE | default "id_ed25519"}}'
+  SSH_KEY_PATH: '{{.SSH_KEY_PATH | default (printf "%s/%s" .SSH_DIR .SSH_FILE)}}'
+  SSH_PUB_KEY_PATH: '{{.SSH_PUB_KEY_PATH | default (printf "%s/%s.pub" .SSH_DIR .SSH_FILE)}}'
+  SSH_KNOWN_HOSTS: '{{.SSH_KNOWN_HOSTS | default (printf "%s/known_hosts" .SSH_DIR)}}'
+
+  LXC_NETWORK_CIDR: '{{.LXC_NETWORK_CIDR | default "24"}}'
+  LXC_GATEWAY: '{{.LXC_GATEWAY | default "192.168.88.1"}}'
+  LXC_BRIDGE: '{{.LXC_BRIDGE | default "vmbr0"}}'
+  LXC_TIMEZONE: '{{.LXC_TIMEZONE | default "Pacific/Auckland"}}'
+  LXC_DNS_SERVER: '{{.LXC_DNS_SERVER | default "1.1.1.1"}}'
+  LXC_SEARCHDOMAIN: '{{.LXC_SEARCHDOMAIN | default "fouchger.uk"}}'
+  LXC_VLAN: '{{.LXC_VLAN | default "1"}}'
+  LXC_IPV6_METHOD: '{{.LXC_IPV6_METHOD | default "auto"}}'
+  LXC_APT_CACHER: '{{.LXC_APT_CACHER | default "yes"}}'
+  LXC_APT_CACHER_IP: '{{.LXC_APT_CACHER_IP | default "192.168.88.8"}}'
+  LXC_FUSE: '{{.LXC_FUSE | default "yes"}}'
+  LXC_TUN: '{{.LXC_TUN | default "yes"}}'
+  LXC_GPU: '{{.LXC_GPU | default "no"}}'
+  LXC_NESTING: '{{.LXC_NESTING | default "1"}}'
+  LXC_KEYCTL: '{{.LXC_KEYCTL | default "1"}}'
+  LXC_MKNOD: '{{.LXC_MKNOD | default "1"}}'
+  LXC_MOUNT_FS: '{{.LXC_MOUNT_FS | default "nfs,cifs"}}'
+  LXC_PROTECTION: '{{.LXC_PROTECTION | default "no"}}'
+  LXC_VERBOSE: '{{.LXC_VERBOSE | default "yes"}}'
+  LXC_UNPRIVILEGED: '{{.LXC_UNPRIVILEGED | default "1"}}'
+
+  TECHNITIUMDNS_CID: '{{.TECHNITIUMDNS_CID | default "23000"}}'
+  TRAEFIK_CID: '{{.TRAEFIK_CID | default "23001"}}'
+  TECHNITIUMDNS_IP: '{{.TECHNITIUMDNS_IP | default "192.168.88.2"}}'
+  TRAEFIK_IP: '{{.TRAEFIK_IP | default "192.168.88.3"}}'
+  TECHNITIUMDNS_HOSTNAME: '{{.TECHNITIUMDNS_HOSTNAME | default "technitiumdns"}}'
+  TRAEFIK_HOSTNAME: '{{.TRAEFIK_HOSTNAME | default "traefik"}}'
+  ROUTER01_HOSTNAME: '{{.ROUTER01_HOSTNAME | default "router01.fouchger.uk"}}'
+  PROXMOX01_HOSTNAME: '{{.PROXMOX01_HOSTNAME | default "proxmox01.fouchger.uk"}}'
+  OMV01_HOSTNAME: '{{.OMV01_HOSTNAME | default "omv01.fouchger.uk"}}'
+  ROUTER01_IP: '{{.ROUTER01_IP | default "192.168.88.1"}}'
+  PROXMOX01_IP: '{{.PROXMOX01_IP | default "192.168.88.250"}}'
+  OMV01_IP: '{{.OMV01_IP | default "192.168.88.251"}}'
+  TECHNITIUMDNS_FQDN: '{{.TECHNITIUMDNS_FQDN | default "technitiumdns.fouchger.uk"}}'
+  TECHNITIUM_AUTOMATION_USERNAME: '{{.TECHNITIUM_AUTOMATION_USERNAME | default "svc_technitium_ansible"}}'
+
+  TECHNITIUMDNS_CPU: '{{.TECHNITIUMDNS_CPU | default "1"}}'
+  TECHNITIUMDNS_RAM: '{{.TECHNITIUMDNS_RAM | default "2048"}}'
+  TECHNITIUMDNS_DISK: '{{.TECHNITIUMDNS_DISK | default "10"}}'
+  TRAEFIK_CPU: '{{.TRAEFIK_CPU | default "1"}}'
+  TRAEFIK_RAM: '{{.TRAEFIK_RAM | default "1024"}}'
+  TRAEFIK_DISK: '{{.TRAEFIK_DISK | default "8"}}'
+
+tasks:
+  lxc:list:
+    desc: Show the planned LXC application containers and addressing model
+    cmds:
+      - |
+          # ================================================================
+          # Task: lxc:list
+          # Purpose:
+          #   Show the current LXC plan used by the unattended workflow.
+          # ================================================================
+          cat <<EOF2
+          Planned LXC application containers
+            - {{.TECHNITIUMDNS_CID}}  {{.TECHNITIUMDNS_HOSTNAME}}  technitiumdns   {{.TECHNITIUMDNS_IP}}/{{.LXC_NETWORK_CIDR}}
+            - {{.TRAEFIK_CID}}        {{.TRAEFIK_HOSTNAME}}        alpine-traefik  {{.TRAEFIK_IP}}/{{.LXC_NETWORK_CIDR}}
+
+          Network baseline
+            - Search domain: {{.LXC_SEARCHDOMAIN}}
+            - Gateway:       {{.LXC_GATEWAY}}
+            - DNS bootstrap: {{.LXC_DNS_SERVER}}
+            - Bridge:        {{.LXC_BRIDGE}}
+            - SSH public key: {{.SSH_PUB_KEY_PATH}}
+          EOF2
+
+  lxc:dirs:
+    desc: Ensure the local generated directories exist for LXC automation
+    cmds:
+      - |
+          # ================================================================
+          # Task: lxc:dirs
+          # Purpose:
+          #   Prepare local runtime directories for generated defaults and
+          #   inventory files.
+          # ================================================================
+          set -euo pipefail
+          mkdir -p '{{.DEFAULTS_DIR}}' 'state/secrets/lxc' 'state/configs/lxc'
+          chmod 700 'state/secrets/lxc' || true
+          echo 'Prepared local LXC runtime directories'
+
+  lxc:secret:set:root-password:
+    desc: Prompt for the shared LXC root password and save it for future runs
+    cmds:
+      - |
+          # ================================================================
+          # Task: lxc:secret:set:root-password
+          # Purpose:
+          #   Prompt for the LXC root password and persist it into the
+          #   standard secrets file for future unattended runs.
+          # ================================================================
+          set -euo pipefail
+
+          secrets_file='{{.SECRETS_FILE}}'
+          mkdir -p "$(dirname "${secrets_file}")"
+          touch "${secrets_file}"
+          chmod 600 "${secrets_file}" || true
+
+          current_value="$(grep -E '^LXC_ROOT_PASSWORD=' "${secrets_file}" | tail -n 1 | cut -d'=' -f2- || true)"
+          if [ -n "${current_value}" ]; then
+            echo 'LXC root password already present in state/secrets/lxc/lxc.secrets.env'
+            exit 0
+          fi
+
+          upsert_env() {
+            key="$1"
+            value="$2"
+            file="$3"
+            if grep -qE "^${key}=" "${file}"; then
+              awk -v key="${key}" -v value="${value}" '
+                BEGIN { updated = 0 }
+                $0 ~ "^" key "=" {
+                  print key "=" value
+                  updated = 1
+                  next
+                }
+                { print }
+                END {
+                  if (updated == 0) {
+                    print key "=" value
+                  }
+                }
+              ' "${file}" > "${file}.tmp"
+              mv "${file}.tmp" "${file}"
+            else
+              printf '%s=%s\n' "${key}" "${value}" >> "${file}"
+            fi
+          }
+
+          printf '%s' 'Enter LXC root password: ' > /dev/tty
+          stty -echo < /dev/tty
+          read -r response < /dev/tty || true
+          stty echo < /dev/tty
+          printf '\n' > /dev/tty
+
+          if [ -z "${response}" ]; then
+            echo 'LXC root password cannot be empty.' >&2
+            exit 1
+          fi
+
+          upsert_env 'LXC_ROOT_PASSWORD' "${response}" "${secrets_file}"
+          echo 'Saved LXC root password to state/secrets/lxc/lxc.secrets.env'
+
+  lxc:secret:set:cloudflare-token:
+    desc: Prompt for the Cloudflare DNS API token and save it for future runs
+    cmds:
+      - |
+          # ================================================================
+          # Task: lxc:secret:set:cloudflare-token
+          # Purpose:
+          #   Prompt for the Cloudflare token and persist it into the
+          #   standard LXC secrets file for future unattended runs.
+          # ================================================================
+          set -euo pipefail
+
+          secrets_file='{{.SECRETS_FILE}}'
+          mkdir -p "$(dirname "${secrets_file}")"
+          touch "${secrets_file}"
+          chmod 600 "${secrets_file}" || true
+
+          current_value="$(grep -E '^CLOUDFLARE_DNS_API_TOKEN=' "${secrets_file}" | tail -n 1 | cut -d'=' -f2- || true)"
+          if [ -n "${current_value}" ]; then
+            echo 'Cloudflare DNS API token already present in state/secrets/lxc/lxc.secrets.env'
+            exit 0
+          fi
+
+          upsert_env() {
+            key="$1"
+            value="$2"
+            file="$3"
+            if grep -qE "^${key}=" "${file}"; then
+              awk -v key="${key}" -v value="${value}" '
+                BEGIN { updated = 0 }
+                $0 ~ "^" key "=" {
+                  print key "=" value
+                  updated = 1
+                  next
+                }
+                { print }
+                END {
+                  if (updated == 0) {
+                    print key "=" value
+                  }
+                }
+              ' "${file}" > "${file}.tmp"
+              mv "${file}.tmp" "${file}"
+            else
+              printf '%s=%s\n' "${key}" "${value}" >> "${file}"
+            fi
+          }
+
+          printf '%s' 'Enter Cloudflare DNS API token: ' > /dev/tty
+          stty -echo < /dev/tty
+          read -r response < /dev/tty || true
+          stty echo < /dev/tty
+          printf '\n' > /dev/tty
+
+          if [ -z "${response}" ]; then
+            echo 'Cloudflare DNS API token cannot be empty.' >&2
+            exit 1
+          fi
+
+          upsert_env 'CLOUDFLARE_DNS_API_TOKEN' "${response}" "${secrets_file}"
+          echo 'Saved Cloudflare DNS API token to state/secrets/lxc/lxc.secrets.env'
+
+
+  lxc:secret:set:technitium-admin-password:
+    desc: Prompt for the Technitium admin password and save it for future runs
+    cmds:
+      - |
+          # ================================================================
+          # Task: lxc:secret:set:technitium-admin-password
+          # Purpose:
+          #   Prompt for the desired production Technitium admin password and
+          #   persist it into the standard LXC secrets file.
+          # ================================================================
+          set -euo pipefail
+
+          secrets_file='{{.SECRETS_FILE}}'
+          mkdir -p "$(dirname "${secrets_file}")"
+          touch "${secrets_file}"
+          chmod 600 "${secrets_file}" || true
+
+          current_value="$(grep -E '^TECHNITIUM_ADMIN_PASSWORD=' "${secrets_file}" | tail -n 1 | cut -d'=' -f2- || true)"
+          if [ -n "${current_value}" ]; then
+            echo 'Technitium admin password already present in state/secrets/lxc/lxc.secrets.env'
+            exit 0
+          fi
+
+          upsert_env() {
+            key="$1"
+            value="$2"
+            file="$3"
+            if grep -qE "^${key}=" "${file}"; then
+              awk -v key="${key}" -v value="${value}" '
+                BEGIN { updated = 0 }
+                $0 ~ "^" key "=" {
+                  print key "=" value
+                  updated = 1
+                  next
+                }
+                { print }
+                END {
+                  if (updated == 0) {
+                    print key "=" value
+                  }
+                }
+              ' "${file}" > "${file}.tmp"
+              mv "${file}.tmp" "${file}"
+            else
+              printf '%s=%s\n' "${key}" "${value}" >> "${file}"
+            fi
+          }
+
+          printf '%s' 'Enter desired Technitium admin password: ' > /dev/tty
+          stty -echo < /dev/tty
+          read -r response < /dev/tty || true
+          stty echo < /dev/tty
+          printf '\n' > /dev/tty
+
+          if [ -z "${response}" ]; then
+            echo 'Technitium admin password cannot be empty.' >&2
+            exit 1
+          fi
+
+          upsert_env 'TECHNITIUM_ADMIN_PASSWORD' "${response}" "${secrets_file}"
+          echo 'Saved Technitium admin password to state/secrets/lxc/lxc.secrets.env'
+
+  lxc:secret:set:technitium-automation-password:
+    desc: Prompt for the Technitium automation password and save it for future runs
+    cmds:
+      - |
+          # ================================================================
+          # Task: lxc:secret:set:technitium-automation-password
+          # Purpose:
+          #   Prompt for the Technitium automation user password and persist
+          #   it into the standard LXC secrets file.
+          # ================================================================
+          set -euo pipefail
+
+          secrets_file='{{.SECRETS_FILE}}'
+          mkdir -p "$(dirname "${secrets_file}")"
+          touch "${secrets_file}"
+          chmod 600 "${secrets_file}" || true
+
+          current_value="$(grep -E '^TECHNITIUM_AUTOMATION_PASSWORD=' "${secrets_file}" | tail -n 1 | cut -d'=' -f2- || true)"
+          if [ -n "${current_value}" ]; then
+            echo 'Technitium automation password already present in state/secrets/lxc/lxc.secrets.env'
+            exit 0
+          fi
+
+          upsert_env() {
+            key="$1"
+            value="$2"
+            file="$3"
+            if grep -qE "^${key}=" "${file}"; then
+              awk -v key="${key}" -v value="${value}" '
+                BEGIN { updated = 0 }
+                $0 ~ "^" key "=" {
+                  print key "=" value
+                  updated = 1
+                  next
+                }
+                { print }
+                END {
+                  if (updated == 0) {
+                    print key "=" value
+                  }
+                }
+              ' "${file}" > "${file}.tmp"
+              mv "${file}.tmp" "${file}"
+            else
+              printf '%s=%s\n' "${key}" "${value}" >> "${file}"
+            fi
+          }
+
+          printf '%s' 'Enter Technitium automation user password: ' > /dev/tty
+          stty -echo < /dev/tty
+          read -r response < /dev/tty || true
+          stty echo < /dev/tty
+          printf '\n' > /dev/tty
+
+          if [ -z "${response}" ]; then
+            echo 'Technitium automation password cannot be empty.' >&2
+            exit 1
+          fi
+
+          upsert_env 'TECHNITIUM_AUTOMATION_PASSWORD' "${response}" "${secrets_file}"
+          echo 'Saved Technitium automation password to state/secrets/lxc/lxc.secrets.env'
+
+  lxc:env:ensure:
+    desc: Ensure the baseline LXC configuration exists in state/configs/.env
+    cmds:
+      - |
+          # ================================================================
+          # Task: lxc:env:ensure
+          # Purpose:
+          #   Prompt for and persist non-secret LXC runtime settings.
+          #
+          # Notes:
+          #   - Proxmox host, user, and datastore values must already exist
+          #     in state/configs/.env from the Proxmox workflow.
+          #   - This task only prompts for environment-specific LXC values and
+          #     writes stable defaults automatically.
+          # ================================================================
+          set -euo pipefail
+
+          env_file='{{.ENV_FILE}}'
+          mkdir -p "$(dirname "${env_file}")"
+          touch "${env_file}"
+          chmod 600 "${env_file}" || true
+
+          upsert_env() {
+            key="$1"
+            value="$2"
+            file="$3"
+            if grep -qE "^${key}=" "${file}"; then
+              awk -v key="${key}" -v value="${value}" '
+                BEGIN { updated = 0 }
+                $0 ~ "^" key "=" {
+                  print key "=" value
+                  updated = 1
+                  next
+                }
+                { print }
+                END {
+                  if (updated == 0) {
+                    print key "=" value
+                  }
+                }
+              ' "${file}" > "${file}.tmp"
+              mv "${file}.tmp" "${file}"
+            else
+              printf '%s=%s\n' "${key}" "${value}" >> "${file}"
+            fi
+          }
+
+          require_existing_env() {
+            key="$1"
+            current_value="$(grep -E "^${key}=" "${env_file}" | tail -n 1 | cut -d'=' -f2- || true)"
+            if [ -z "${current_value}" ]; then
+              echo "Required ${key} is missing from ${env_file}. Run task day1:proxmox first." >&2
+              exit 1
+            fi
+          }
+
+          prompt_env() {
+            key="$1"
+            default_value="$2"
+            current_value="$(grep -E "^${key}=" "${env_file}" | tail -n 1 | cut -d'=' -f2- || true)"
+            if [ -n "${current_value}" ]; then
+              printf '%s' "${current_value}"
+              return 0
+            fi
+
+            echo "Missing ${key} in ${env_file}." > /dev/tty
+            printf '%s' "Enter value for ${key} [${default_value}]: " > /dev/tty
+            read -r response < /dev/tty || true
+            if [ -z "${response}" ]; then
+              response="${default_value}"
+            fi
+            upsert_env "${key}" "${response}" "${env_file}"
+            printf '%s' "${response}"
+          }
+
+          require_existing_env 'PROXMOX_HOST_IP'
+          require_existing_env 'PROXMOX_HOST'
+          require_existing_env 'PROXMOX_SSH_USER'
+          require_existing_env 'PROXMOX_TEMPLATE_DATASTORE'
+          require_existing_env 'PROXMOX_VM_DATASTORE'
+          require_existing_env 'PROXMOX_SNIPPETS_DATASTORE'
+          require_existing_env 'PROXMOX_NODE_NAME'
+
+          domain_value="$(prompt_env CLOUDFLARE_DOMAIN 'fouchger.uk')"
+          prompt_env LXC_TIMEZONE '{{.LXC_TIMEZONE}}' >/dev/null
+          prompt_env LXC_GATEWAY '{{.LXC_GATEWAY}}' >/dev/null
+          prompt_env TECHNITIUMDNS_IP '{{.TECHNITIUMDNS_IP}}' >/dev/null
+          prompt_env TRAEFIK_IP '{{.TRAEFIK_IP}}' >/dev/null
+          prompt_env CLOUDFLARE_ACME_EMAIL 'admin@fouchger.uk' >/dev/null
+          prompt_env TECHNITIUMDNS_FQDN '{{.TECHNITIUMDNS_FQDN}}' >/dev/null
+          prompt_env ROUTER01_HOSTNAME '{{.ROUTER01_HOSTNAME}}' >/dev/null
+          prompt_env ROUTER01_IP '{{.ROUTER01_IP}}' >/dev/null
+          prompt_env PROXMOX01_HOSTNAME '{{.PROXMOX01_HOSTNAME}}' >/dev/null
+          prompt_env PROXMOX01_IP '{{.PROXMOX01_IP}}' >/dev/null
+          prompt_env OMV01_HOSTNAME '{{.OMV01_HOSTNAME}}' >/dev/null
+          prompt_env OMV01_IP '{{.OMV01_IP}}' >/dev/null
+          prompt_env TECHNITIUM_AUTOMATION_USERNAME '{{.TECHNITIUM_AUTOMATION_USERNAME}}' >/dev/null
+
+          upsert_env 'LXC_SEARCHDOMAIN' "${domain_value}" "${env_file}"
+          upsert_env 'LXC_NETWORK_CIDR' '{{.LXC_NETWORK_CIDR}}' "${env_file}"
+          upsert_env 'LXC_BRIDGE' '{{.LXC_BRIDGE}}' "${env_file}"
+          upsert_env 'LXC_VLAN' '{{.LXC_VLAN}}' "${env_file}"
+          upsert_env 'LXC_DNS_SERVER' '{{.LXC_DNS_SERVER}}' "${env_file}"
+          upsert_env 'TECHNITIUMDNS_CID' '{{.TECHNITIUMDNS_CID}}' "${env_file}"
+          upsert_env 'TRAEFIK_CID' '{{.TRAEFIK_CID}}' "${env_file}"
+          upsert_env 'TECHNITIUMDNS_HOSTNAME' '{{.TECHNITIUMDNS_HOSTNAME}}' "${env_file}"
+          upsert_env 'TRAEFIK_HOSTNAME' '{{.TRAEFIK_HOSTNAME}}' "${env_file}"
+          upsert_env 'TECHNITIUMDNS_FQDN' '{{.TECHNITIUMDNS_FQDN}}' "${env_file}"
+          upsert_env 'TECHNITIUM_AUTOMATION_USERNAME' '{{.TECHNITIUM_AUTOMATION_USERNAME}}' "${env_file}"
+          upsert_env 'TECHNITIUMDNS_CPU' '{{.TECHNITIUMDNS_CPU}}' "${env_file}"
+          upsert_env 'TECHNITIUMDNS_RAM' '{{.TECHNITIUMDNS_RAM}}' "${env_file}"
+          upsert_env 'TECHNITIUMDNS_DISK' '{{.TECHNITIUMDNS_DISK}}' "${env_file}"
+          upsert_env 'TRAEFIK_CPU' '{{.TRAEFIK_CPU}}' "${env_file}"
+          upsert_env 'TRAEFIK_RAM' '{{.TRAEFIK_RAM}}' "${env_file}"
+          upsert_env 'TRAEFIK_DISK' '{{.TRAEFIK_DISK}}' "${env_file}"
+
+          echo 'LXC configuration file is ready'
+
+  lxc:secrets:ensure:
+    desc: Ensure the LXC secrets file exists and contains required values
+    cmds:
+      - task: lxc:dirs
+      - task: lxc:secret:set:root-password
+      - task: lxc:secret:set:cloudflare-token
+      - task: lxc:secret:set:technitium-admin-password
+      - task: lxc:secret:set:technitium-automation-password
+
+  lxc:render:
+    desc: Generate app-specific community-scripts defaults and Ansible inventory files
+    cmds:
+      - task: lxc:dirs
+      - task: lxc:env:ensure
+      - task: lxc:secrets:ensure
+      - task: ssh:generate-key
+      - task: lxc:defaults:generate
+
+  lxc:defaults:generate:
+    desc: Generate app-specific community-scripts defaults and Ansible inventory files
+    cmds:
+      - |
+          # ================================================================
+          # Task: lxc:defaults:generate
+          # Purpose:
+          #   Render local defaults files for community-scripts app-defaults
+          #   consumption and generate the matching Ansible inventory.
+          # ================================================================
+          set -euo pipefail
+
+          env_file='{{.ENV_FILE}}'
+          secrets_file='{{.SECRETS_FILE}}'
+          ssh_pub='{{.SSH_PUB_KEY_PATH}}'
+          defaults_dir='{{.DEFAULTS_DIR}}'
+          inventory_file='{{.ANSIBLE_INVENTORY_FILE}}'
+
+          if [ ! -f "${env_file}" ]; then
+            echo "Required env file not found: ${env_file}" >&2
+            exit 1
+          fi
+          if [ ! -f "${secrets_file}" ]; then
+            echo "Required secrets file not found: ${secrets_file}" >&2
+            exit 1
+          fi
+          if [ ! -f "${ssh_pub}" ]; then
+            echo "Required SSH public key not found: ${ssh_pub}" >&2
+            exit 1
+          fi
+
+          # shellcheck disable=SC1090
+          . "${env_file}"
+          # shellcheck disable=SC1090
+          . "${secrets_file}"
+
+          : "${PROXMOX_TEMPLATE_DATASTORE:?PROXMOX_TEMPLATE_DATASTORE must be set in ${env_file}}"
+          : "${PROXMOX_VM_DATASTORE:?PROXMOX_VM_DATASTORE must be set in ${env_file}}"
+          : "${PROXMOX_NODE_NAME:?PROXMOX_NODE_NAME must be set in ${env_file}}"
+          : "${LXC_ROOT_PASSWORD:?LXC_ROOT_PASSWORD must be set in ${secrets_file}}"
+          : "${CLOUDFLARE_DNS_API_TOKEN:?CLOUDFLARE_DNS_API_TOKEN must be set in ${secrets_file}}"
+          : "${TECHNITIUM_ADMIN_PASSWORD:?TECHNITIUM_ADMIN_PASSWORD must be set in ${secrets_file}}"
+          : "${TECHNITIUM_AUTOMATION_PASSWORD:?TECHNITIUM_AUTOMATION_PASSWORD must be set in ${secrets_file}}"
+
+          admin_ssh_key="$(tr -d '\\n' < "${ssh_pub}")"
+
+          cat > "${defaults_dir}/technitiumdns.vars" <<EOF2
+          # ================================================================
+          # File: ${defaults_dir}/technitiumdns.vars
+          # Purpose:
+          #   App defaults for the community-scripts Technitium DNS container.
+          # ================================================================
+          var_hostname=${TECHNITIUMDNS_HOSTNAME}
+          var_os=debian
+          var_version=13
+          var_unprivileged={{.LXC_UNPRIVILEGED}}
+          var_cpu=${TECHNITIUMDNS_CPU}
+          var_ram=${TECHNITIUMDNS_RAM}
+          var_disk=${TECHNITIUMDNS_DISK}
+          var_brg=${LXC_BRIDGE}
+          var_net=${TECHNITIUMDNS_IP}/${LXC_NETWORK_CIDR}
+          var_gateway=${LXC_GATEWAY}
+          var_vlan=${LXC_VLAN}
+          var_ns=${LXC_DNS_SERVER}
+          var_ipv6_method={{.LXC_IPV6_METHOD}}
+          var_ssh=yes
+          var_ssh_authorized_key=${admin_ssh_key}
+          var_pw=${LXC_ROOT_PASSWORD}
+          var_apt_cacher={{.LXC_APT_CACHER}}
+          var_apt_cacher_ip={{.LXC_APT_CACHER_IP}}
+          var_fuse={{.LXC_FUSE}}
+          var_tun={{.LXC_TUN}}
+          var_gpu={{.LXC_GPU}}
+          var_nesting={{.LXC_NESTING}}
+          var_keyctl={{.LXC_KEYCTL}}
+          var_mknod={{.LXC_MKNOD}}
+          var_mount_fs={{.LXC_MOUNT_FS}}
+          var_protection={{.LXC_PROTECTION}}
+          var_timezone=${LXC_TIMEZONE}
+          var_tags=dns;technitium;homelab
+          var_verbose={{.LXC_VERBOSE}}
+          var_searchdomain=${LXC_SEARCHDOMAIN}
+          var_template_storage=${PROXMOX_TEMPLATE_DATASTORE}
+          var_container_storage=${PROXMOX_VM_DATASTORE}
+          EOF2
+
+          cat > "${defaults_dir}/alpine-traefik.vars" <<EOF2
+          # ================================================================
+          # File: ${defaults_dir}/alpine-traefik.vars
+          # Purpose:
+          #   App defaults for the community-scripts Alpine-Traefik container.
+          # ================================================================
+          var_hostname=${TRAEFIK_HOSTNAME}
+          var_os=alpine
+          var_version=3.23
+          var_unprivileged={{.LXC_UNPRIVILEGED}}
+          var_cpu=${TRAEFIK_CPU}
+          var_ram=${TRAEFIK_RAM}
+          var_disk=${TRAEFIK_DISK}
+          var_brg=${LXC_BRIDGE}
+          var_net=${TRAEFIK_IP}/${LXC_NETWORK_CIDR}
+          var_gateway=${LXC_GATEWAY}
+          var_vlan=${LXC_VLAN}
+          var_ns=${LXC_DNS_SERVER}
+          var_ipv6_method={{.LXC_IPV6_METHOD}}
+          var_ssh=yes
+          var_ssh_authorized_key=${admin_ssh_key}
+          var_pw=${LXC_ROOT_PASSWORD}
+          var_apt_cacher={{.LXC_APT_CACHER}}
+          var_apt_cacher_ip={{.LXC_APT_CACHER_IP}}
+          var_fuse={{.LXC_FUSE}}
+          var_tun={{.LXC_TUN}}
+          var_gpu={{.LXC_GPU}}
+          var_nesting={{.LXC_NESTING}}
+          var_keyctl={{.LXC_KEYCTL}}
+          var_mknod={{.LXC_MKNOD}}
+          var_mount_fs={{.LXC_MOUNT_FS}}
+          var_protection={{.LXC_PROTECTION}}
+          var_timezone=${LXC_TIMEZONE}
+          var_tags=proxy;traefik;homelab
+          var_verbose={{.LXC_VERBOSE}}
+          var_searchdomain=${LXC_SEARCHDOMAIN}
+          var_template_storage=${PROXMOX_TEMPLATE_DATASTORE}
+          var_container_storage=${PROXMOX_VM_DATASTORE}
+          EOF2
+
+          cat > "${inventory_file}" <<EOF2
+          # ================================================================
+          # File: ${inventory_file}
+          # Purpose:
+          #   Generated Ansible inventory for the baseline LXC application
+          #   containers created by the unattended Proxmox workflow.
+          # ================================================================
+          all:
+            vars:
+              ansible_connection: ssh
+              ansible_user: root
+              ansible_password: ${LXC_ROOT_PASSWORD}
+              ansible_become_password: ${LXC_ROOT_PASSWORD}
+              ansible_ssh_private_key_file: {{.SSH_KEY_PATH}}
+              ansible_ssh_common_args: -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{.SSH_KNOWN_HOSTS}}
+              admin_ssh_public_key_path: {{.SSH_PUB_KEY_PATH}}
+              homelab_domain: ${CLOUDFLARE_DOMAIN}
+              homelab_gateway: ${LXC_GATEWAY}
+              lxc_timezone: ${LXC_TIMEZONE}
+              lxc_searchdomain: ${LXC_SEARCHDOMAIN}
+              cloudflare_acme_email: ${CLOUDFLARE_ACME_EMAIL}
+              cloudflare_dns_api_token: ${CLOUDFLARE_DNS_API_TOKEN}
+              proxmox_node_name: ${PROXMOX_NODE_NAME}
+              technitium_server_fqdn: ${TECHNITIUMDNS_FQDN}
+              technitium_admin_password: ${TECHNITIUM_ADMIN_PASSWORD}
+              technitium_automation_username: ${TECHNITIUM_AUTOMATION_USERNAME}
+              technitium_automation_password: ${TECHNITIUM_AUTOMATION_PASSWORD}
+              technitium_automation_api_token: ${TECHNITIUM_AUTOMATION_API_TOKEN:-}
+            children:
+              lxc_technitiumdns:
+                hosts:
+                  ${TECHNITIUMDNS_HOSTNAME}:
+                    ansible_host: ${TECHNITIUMDNS_IP}
+                    lxc_ctid: ${TECHNITIUMDNS_CID}
+                    lxc_role: technitiumdns
+              lxc_traefik:
+                hosts:
+                  ${TRAEFIK_HOSTNAME}:
+                    ansible_host: ${TRAEFIK_IP}
+                    lxc_ctid: ${TRAEFIK_CID}
+                    lxc_role: traefik
+              dns_infrastructure:
+                hosts:
+                  ${ROUTER01_HOSTNAME}:
+                    ansible_host: ${ROUTER01_IP}
+                    dns_role: router
+                  ${PROXMOX01_HOSTNAME}:
+                    ansible_host: ${PROXMOX01_IP}
+                    dns_role: proxmox
+                  ${OMV01_HOSTNAME}:
+                    ansible_host: ${OMV01_IP}
+                    dns_role: storage
+          EOF2
+
+          chmod 600 "${defaults_dir}/technitiumdns.vars" "${defaults_dir}/alpine-traefik.vars" "${inventory_file}"
+          echo 'Generated LXC defaults and Ansible inventory'
+
+  lxc:copy-defaults:
+    desc: Copy generated community-scripts defaults files to the Proxmox host
+    cmds:
+      - task: lxc:defaults:copy
+
+  lxc:defaults:copy:
+    desc: Copy generated community-scripts defaults files to the Proxmox host
+    deps:
+      - task: lxc:render
+      - task: ssh:bootstrap
+    cmds:
+      - |
+          # ================================================================
+          # Task: lxc:defaults:copy
+          # Purpose:
+          #   Copy the generated app defaults files to the Proxmox host so the
+          #   community-scripts installer can consume them as App Defaults.
+          # ================================================================
+          set -euo pipefail
+
+          env_file='{{.ENV_FILE}}'
+          ssh_key='{{.SSH_KEY_PATH}}'
+          known_hosts='{{.SSH_KNOWN_HOSTS}}'
+          defaults_dir='{{.DEFAULTS_DIR}}'
+
+          . "${env_file}"
+
+          : "${PROXMOX_HOST_IP:?PROXMOX_HOST_IP must be set in ${env_file}}"
+          : "${PROXMOX_SSH_USER:?PROXMOX_SSH_USER must be set in ${env_file}}"
+
+          ssh_target="${PROXMOX_SSH_USER}@${PROXMOX_HOST_IP}"
+
+          ssh -i "${ssh_key}" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${known_hosts}" "${ssh_target}" 'mkdir -p /usr/local/community-scripts/defaults'
+          scp -i "${ssh_key}" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${known_hosts}" "${defaults_dir}/technitiumdns.vars" "${defaults_dir}/alpine-traefik.vars" "${ssh_target}:/usr/local/community-scripts/defaults/"
+
+          echo 'Copied generated defaults files to the Proxmox host'
+
+  lxc:deploy:one:
+    internal: true
+    desc: Internal helper to deploy a single community-scripts app container
+    vars:
+    requires:
+      vars:
+        - SCRIPT_URL
+        - APP_DEFAULTS_FILE
+        - CTID
+        - HOSTNAME
+    cmds:
+      - task: lxc:copy-defaults
+      - |
+          # ================================================================
+          # Task: lxc:deploy:one
+          # Purpose:
+          #   Run a single community-scripts application deployment in silent
+          #   mode using the generated app-defaults file.
+          # ================================================================
+          set -euo pipefail
+
+          env_file='{{.ENV_FILE}}'
+          ssh_key='{{.SSH_KEY_PATH}}'
+          known_hosts='{{.SSH_KNOWN_HOSTS}}'
+
+          . "${env_file}"
+
+          : "${PROXMOX_HOST_IP:?PROXMOX_HOST_IP must be set in ${env_file}}"
+          : "${PROXMOX_SSH_USER:?PROXMOX_SSH_USER must be set in ${env_file}}"
+
+          ssh_target="${PROXMOX_SSH_USER}@${PROXMOX_HOST_IP}"
+
+          if ssh             -i "${ssh_key}"             -o BatchMode=yes             -o StrictHostKeyChecking=accept-new             -o UserKnownHostsFile="${known_hosts}"             "${ssh_target}"             "pct status {{.CTID}} >/dev/null 2>&1"; then
+            echo 'Container {{.HOSTNAME}} with CTID {{.CTID}} already exists on Proxmox, skipping create step'
+            exit 0
+          fi
+
+          echo 'Running unattended deployment for {{.HOSTNAME}}...'
+
+          ssh -tt             -i "${ssh_key}"             -o BatchMode=yes             -o StrictHostKeyChecking=accept-new             -o UserKnownHostsFile="${known_hosts}"             "${ssh_target}"             "bash -lc 'set -euo pipefail; test -f /usr/local/community-scripts/defaults/{{.APP_DEFAULTS_FILE}}; export PHS_SILENT=1; export var_ctid={{.CTID}}; export CTID={{.CTID}}; bash <(curl -fsSL {{.SCRIPT_URL}}) 4'"
+
+          echo 'Completed unattended deployment for {{.HOSTNAME}}'
+
+  lxc:deploy:technitiumdns:
+    desc: Deploy the Technitium DNS container on Proxmox using App Defaults
+    cmds:
+      - task: lxc:deploy:one
+        vars:
+          SCRIPT_URL: 'https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/ct/technitiumdns.sh'
+          APP_DEFAULTS_FILE: 'technitiumdns.vars'
+          CTID: '{{.TECHNITIUMDNS_CID}}'
+          HOSTNAME: '{{.TECHNITIUMDNS_HOSTNAME}}'
+
+  lxc:deploy:traefik:
+    desc: Deploy the Alpine-Traefik container on Proxmox using App Defaults
+    cmds:
+      - task: lxc:deploy:one
+        vars:
+          SCRIPT_URL: 'https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/ct/alpine-traefik.sh'
+          APP_DEFAULTS_FILE: 'alpine-traefik.vars'
+          CTID: '{{.TRAEFIK_CID}}'
+          HOSTNAME: '{{.TRAEFIK_HOSTNAME}}'
+
+  lxc:configure:technitiumdns:
+    desc: Configure only the Technitium DNS LXC with Ansible
+    cmds:
+      - task: lxc:ansible:configure:technitiumdns
+
+  lxc:ansible:configure:technitiumdns:
+    desc: Configure only the Technitium DNS LXC with Ansible
+    cmds:
+      - task: lxc:defaults:generate
+      - task: apps:ansible:collections
+      - |
+          set -euo pipefail
+
+          ansible_playbook_cmd=''
+
+          if command -v ansible-playbook >/dev/null 2>&1; then
+            ansible_playbook_cmd="$(command -v ansible-playbook)"
+          elif [ -x "${HOME}/.local/bin/ansible-playbook" ]; then
+            ansible_playbook_cmd="${HOME}/.local/bin/ansible-playbook"
+          elif [ -x "${HOME}/.local/share/pipx/venvs/ansible/bin/ansible-playbook" ]; then
+            ansible_playbook_cmd="${HOME}/.local/share/pipx/venvs/ansible/bin/ansible-playbook"
+          else
+            echo 'ansible-playbook was not found. Run task apps:ansible first.' >&2
+            exit 1
+          fi
+
+          "${ansible_playbook_cmd}" -i '{{.ANSIBLE_INVENTORY_FILE}}' ansible/playbooks/technitiumdns.yml
+
+  lxc:configure:traefik:
+    desc: Configure only the Traefik LXC with Ansible
+    cmds:
+      - task: lxc:ansible:configure:traefik
+
+  lxc:ansible:configure:traefik:
+    desc: Configure only the Traefik LXC with Ansible
+    deps:
+      - task: lxc:defaults:generate
+    cmds:
+      - |
+          set -euo pipefail
+
+          ansible_playbook_cmd=''
+
+          if command -v ansible-playbook >/dev/null 2>&1; then
+            ansible_playbook_cmd="$(command -v ansible-playbook)"
+          elif [ -x "${HOME}/.local/bin/ansible-playbook" ]; then
+            ansible_playbook_cmd="${HOME}/.local/bin/ansible-playbook"
+          elif [ -x "${HOME}/.local/share/pipx/venvs/ansible/bin/ansible-playbook" ]; then
+            ansible_playbook_cmd="${HOME}/.local/share/pipx/venvs/ansible/bin/ansible-playbook"
+          else
+            echo 'ansible-playbook was not found. Run task apps:ansible first.' >&2
+            exit 1
+          fi
+
+          "${ansible_playbook_cmd}" -i '{{.ANSIBLE_INVENTORY_FILE}}' ansible/playbooks/traefik.yml
+
+  lxc:configure:all:
+    desc: Configure the baseline LXC application containers with Ansible
+    cmds:
+      - task: lxc:configure:technitiumdns
+      - task: lxc:configure:traefik
+
+  lxc:bootstrap:
+    desc: Run the full baseline LXC workflow from render through deploy and configure
+    cmds:
+      - task: lxc:preflight
+      - task: lxc:render
+      - task: lxc:deploy:all
+      - task: lxc:configure:all
+
+  lxc:preflight:
+    desc: Validate the prerequisites for the baseline LXC workflow
+    cmds:
+      - |
+          set -euo pipefail
+
+          missing=0
+          for tool in ssh scp awk sed; do
+            if ! command -v "${tool}" >/dev/null 2>&1; then
+              echo "Missing required LXC tool: ${tool}" >&2
+              missing=1
+            fi
+          done
+
+          if ! command -v ansible-playbook >/dev/null 2>&1 &&              [ ! -x "${HOME}/.local/bin/ansible-playbook" ] &&              [ ! -x "${HOME}/.local/share/pipx/venvs/ansible/bin/ansible-playbook" ]; then
+            echo 'ansible-playbook is not available. Run task apps:ansible first.' >&2
+            missing=1
+          fi
+
+          [ "${missing}" -eq 0 ]
+          echo 'LXC preflight checks passed.'
+
+  lxc:deploy:all:
+    desc: Deploy the baseline app containers using App Defaults
+    cmds:
+      - task: lxc:deploy:technitiumdns
+      - task: lxc:deploy:traefik
+
+
+  lxc:destroy:one:
+    internal: true
+    desc: Internal helper to destroy a single repository-managed LXC container
+    requires:
+      vars:
+        - CTID
+        - HOSTNAME
+    cmds:
+      - |
+          # ================================================================
+          # Task: lxc:destroy:one
+          # Purpose:
+          #   Stop and destroy a repository-managed LXC container on the
+          #   Proxmox host when it exists.
+          # ================================================================
+          set -euo pipefail
+
+          env_file='{{.ENV_FILE}}'
+          ssh_key='{{.SSH_KEY_PATH}}'
+          known_hosts='{{.SSH_KNOWN_HOSTS}}'
+
+          if [ ! -f "${env_file}" ]; then
+            echo "Required env file not found: ${env_file}" >&2
+            echo 'Run: task day1:proxmox'
+            exit 1
+          fi
+
+          # shellcheck disable=SC1090
+          . "${env_file}"
+
+          : "${PROXMOX_HOST_IP:?PROXMOX_HOST_IP must be set in ${env_file}}"
+          : "${PROXMOX_SSH_USER:?PROXMOX_SSH_USER must be set in ${env_file}}"
+
+          ssh_target="${PROXMOX_SSH_USER}@${PROXMOX_HOST_IP}"
+
+          if ! ssh -i "${ssh_key}" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${known_hosts}"             "${ssh_target}" "bash -lc 'pct config {{.CTID}} >/dev/null 2>&1'"; then
+            echo 'Container {{.HOSTNAME}} with CTID {{.CTID}} is not present. Skipping destroy step.'
+            exit 0
+          fi
+
+          echo 'Destroying container {{.HOSTNAME}} with CTID {{.CTID}} on Proxmox...'
+
+          ssh -i "${ssh_key}" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${known_hosts}"             "${ssh_target}"             "bash -lc 'set -euo pipefail; if pct status {{.CTID}} 2>/dev/null | grep -q running; then pct shutdown {{.CTID}} --timeout 60 || pct stop {{.CTID}} || true; fi; pct destroy {{.CTID}} --purge 1'"
+
+          echo 'Destroyed container {{.HOSTNAME}}.'
+
+  lxc:destroy:technitiumdns:
+    desc: Destroy the Technitium DNS LXC container when it exists
+    cmds:
+      - task: lxc:destroy:one
+        vars:
+          CTID: '{{.TECHNITIUMDNS_CID}}'
+          HOSTNAME: '{{.TECHNITIUMDNS_HOSTNAME}}'
+
+  lxc:destroy:traefik:
+    desc: Destroy the Traefik LXC container when it exists
+    cmds:
+      - task: lxc:destroy:one
+        vars:
+          CTID: '{{.TRAEFIK_CID}}'
+          HOSTNAME: '{{.TRAEFIK_HOSTNAME}}'
+
+  lxc:destroy:all:
+    desc: Destroy all repository-managed LXC containers
+    cmds:
+      - task: lxc:destroy:traefik
+      - task: lxc:destroy:technitiumdns

@@ -1,0 +1,286 @@
+# ================================================================
+# File: tasks/inputs.Taskfile.yml
+# Purpose:
+#   Centralise all one-off operator prompts so downstream setup tasks can run
+#   from persisted variables instead of collecting input mid-workflow.
+#
+# Notes:
+#   - Non-secret runtime settings are stored in state/configs/.env.
+#   - Sensitive values are stored in state/secrets/bootstrap/bootstrap.secrets.env.
+#   - LXC runtime secrets are also mirrored into state/secrets/lxc/lxc.secrets.env
+#     so existing render and deployment tasks can keep their current file inputs.
+# ================================================================
+
+version: '3'
+
+silent: true
+
+vars:
+  STATE_DIR: state
+  CONFIGS_DIR: '{{.STATE_DIR}}/configs'
+  ENV_FILE: '{{.CONFIGS_DIR}}/.env'
+  SECRETS_DIR: '{{.STATE_DIR}}/secrets'
+  BOOTSTRAP_DIR: '{{.SECRETS_DIR}}/bootstrap'
+  BOOTSTRAP_SECRETS_FILE: '{{.BOOTSTRAP_DIR}}/bootstrap.secrets.env'
+  LXC_SECRETS_DIR: '{{.SECRETS_DIR}}/lxc'
+  LXC_SECRETS_FILE: '{{.LXC_SECRETS_DIR}}/lxc.secrets.env'
+
+  DEFAULT_PROXMOX_HOST_IP: '{{.DEFAULT_PROXMOX_HOST_IP | default "192.168.88.250"}}'
+  DEFAULT_PROXMOX_HOST: '{{.DEFAULT_PROXMOX_HOST | default "pve01"}}'
+  DEFAULT_PROXMOX_SSH_USER: '{{.DEFAULT_PROXMOX_SSH_USER | default "root"}}'
+  DEFAULT_PVE_REALM: '{{.DEFAULT_PVE_REALM | default "pam"}}'
+  DEFAULT_PROXMOX_TEMPLATE_DATASTORE: '{{.DEFAULT_PROXMOX_TEMPLATE_DATASTORE | default "local"}}'
+  DEFAULT_PROXMOX_VM_DATASTORE: '{{.DEFAULT_PROXMOX_VM_DATASTORE | default "local-lvm"}}'
+  DEFAULT_PROXMOX_SNIPPETS_DATASTORE: '{{.DEFAULT_PROXMOX_SNIPPETS_DATASTORE | default "local"}}'
+  DEFAULT_PROXMOX_INSECURE_TLS: '{{.DEFAULT_PROXMOX_INSECURE_TLS | default "true"}}'
+  DEFAULT_USE_PROXMOX_SCRIPT: '{{.DEFAULT_USE_PROXMOX_SCRIPT | default "1"}}'
+  DEFAULT_GITHUB_USERNAME: '{{.DEFAULT_GITHUB_USERNAME | default "Fouchger"}}'
+
+  DEFAULT_CLOUDFLARE_DOMAIN: '{{.DEFAULT_CLOUDFLARE_DOMAIN | default "fouchger.uk"}}'
+  DEFAULT_LXC_TIMEZONE: '{{.DEFAULT_LXC_TIMEZONE | default "Pacific/Auckland"}}'
+  DEFAULT_LXC_GATEWAY: '{{.DEFAULT_LXC_GATEWAY | default "192.168.88.1"}}'
+  DEFAULT_TECHNITIUMDNS_IP: '{{.DEFAULT_TECHNITIUMDNS_IP | default "192.168.88.2"}}'
+  DEFAULT_TRAEFIK_IP: '{{.DEFAULT_TRAEFIK_IP | default "192.168.88.3"}}'
+  DEFAULT_CLOUDFLARE_ACME_EMAIL: '{{.DEFAULT_CLOUDFLARE_ACME_EMAIL | default "admin@fouchger.uk"}}'
+  DEFAULT_TECHNITIUMDNS_FQDN: '{{.DEFAULT_TECHNITIUMDNS_FQDN | default "dns.fouchger.uk"}}'
+  DEFAULT_ROUTER01_HOSTNAME: '{{.DEFAULT_ROUTER01_HOSTNAME | default "router01"}}'
+  DEFAULT_ROUTER01_IP: '{{.DEFAULT_ROUTER01_IP | default "192.168.88.1"}}'
+  DEFAULT_PROXMOX01_HOSTNAME: '{{.DEFAULT_PROXMOX01_HOSTNAME | default "proxmox01"}}'
+  DEFAULT_PROXMOX01_IP: '{{.DEFAULT_PROXMOX01_IP | default "192.168.88.250"}}'
+  DEFAULT_OMV01_HOSTNAME: '{{.DEFAULT_OMV01_HOSTNAME | default "omv01"}}'
+  DEFAULT_OMV01_IP: '{{.DEFAULT_OMV01_IP | default "192.168.88.251"}}'
+  DEFAULT_TECHNITIUM_AUTOMATION_USERNAME: '{{.DEFAULT_TECHNITIUM_AUTOMATION_USERNAME | default "automation"}}'
+
+tasks:
+  inputs:gather:
+    desc: Gather and persist all one-off homelab settings before setup tasks run
+    cmds:
+      - task: inputs:gather:nonsecret
+      - task: inputs:gather:secrets
+      - task: inputs:summary
+
+  inputs:gather:nonsecret:
+    desc: Gather and persist non-secret runtime settings under state/configs/.env
+    cmds:
+      - |
+          # ================================================================
+          # Task: inputs:gather:nonsecret
+          # Purpose:
+          #   Collect the non-secret settings required across SSH, GitHub,
+          #   Proxmox, apps, and LXC workflows.
+          # ================================================================
+          set -euo pipefail
+
+          env_file='{{.ENV_FILE}}'
+          mkdir -p "$(dirname "${env_file}")"
+          touch "${env_file}"
+          chmod 600 "${env_file}" || true
+
+          upsert_env() {
+            key="$1"
+            value="$2"
+            file="$3"
+            if grep -qE "^${key}=" "${file}"; then
+              awk -v key="${key}" -v value="${value}" '
+                BEGIN { updated = 0 }
+                $0 ~ "^" key "=" {
+                  print key "=" value
+                  updated = 1
+                  next
+                }
+                { print }
+                END {
+                  if (updated == 0) {
+                    print key "=" value
+                  }
+                }
+              ' "${file}" > "${file}.tmp"
+              mv "${file}.tmp" "${file}"
+            else
+              printf '%s=%s\n' "${key}" "${value}" >> "${file}"
+            fi
+          }
+
+          prompt_nonsecret() {
+            key="$1"
+            default_value="$2"
+            current_value="$(grep -E "^${key}=" "${env_file}" | tail -n 1 | cut -d'=' -f2- || true)"
+            if [ -n "${current_value}" ]; then
+              printf '%s' "${current_value}"
+              return 0
+            fi
+            printf '%s' "Enter value for ${key} [${default_value}]: " > /dev/tty
+            read -r response < /dev/tty || true
+            if [ -z "${response}" ]; then
+              response="${default_value}"
+            fi
+            upsert_env "${key}" "${response}" "${env_file}"
+            printf '%s' "${response}"
+          }
+
+          git_name_default="$(git config --global --get user.name || true)"
+          if [ -z "${git_name_default}" ]; then
+            git_name_default='Homelab Operator'
+          fi
+          git_name="$(prompt_nonsecret GIT_USER_NAME "${git_name_default}")"
+
+          git_email_default="$(git config --global --get user.email || true)"
+          if [ -z "${git_email_default}" ]; then
+            git_email_default='operator@example.invalid'
+          fi
+          git_email="$(prompt_nonsecret GIT_USER_EMAIL "${git_email_default}")"
+
+          prompt_nonsecret GITHUB_USERNAME '{{.DEFAULT_GITHUB_USERNAME}}' >/dev/null
+          prompt_nonsecret USE_PROXMOX_SCRIPT '{{.DEFAULT_USE_PROXMOX_SCRIPT}}' >/dev/null
+          prompt_nonsecret PROXMOX_HOST_IP '{{.DEFAULT_PROXMOX_HOST_IP}}' >/dev/null
+          prompt_nonsecret PROXMOX_HOST '{{.DEFAULT_PROXMOX_HOST}}' >/dev/null
+          prompt_nonsecret PROXMOX_SSH_USER '{{.DEFAULT_PROXMOX_SSH_USER}}' >/dev/null
+          prompt_nonsecret PVE_REALM '{{.DEFAULT_PVE_REALM}}' >/dev/null
+          prompt_nonsecret PROXMOX_TEMPLATE_DATASTORE '{{.DEFAULT_PROXMOX_TEMPLATE_DATASTORE}}' >/dev/null
+          prompt_nonsecret PROXMOX_VM_DATASTORE '{{.DEFAULT_PROXMOX_VM_DATASTORE}}' >/dev/null
+          prompt_nonsecret PROXMOX_SNIPPETS_DATASTORE '{{.DEFAULT_PROXMOX_SNIPPETS_DATASTORE}}' >/dev/null
+          prompt_nonsecret PROXMOX_INSECURE_TLS '{{.DEFAULT_PROXMOX_INSECURE_TLS}}' >/dev/null
+          prompt_nonsecret CLOUDFLARE_DOMAIN '{{.DEFAULT_CLOUDFLARE_DOMAIN}}' >/dev/null
+          prompt_nonsecret LXC_TIMEZONE '{{.DEFAULT_LXC_TIMEZONE}}' >/dev/null
+          prompt_nonsecret LXC_GATEWAY '{{.DEFAULT_LXC_GATEWAY}}' >/dev/null
+          prompt_nonsecret TECHNITIUMDNS_IP '{{.DEFAULT_TECHNITIUMDNS_IP}}' >/dev/null
+          prompt_nonsecret TRAEFIK_IP '{{.DEFAULT_TRAEFIK_IP}}' >/dev/null
+          prompt_nonsecret CLOUDFLARE_ACME_EMAIL '{{.DEFAULT_CLOUDFLARE_ACME_EMAIL}}' >/dev/null
+          prompt_nonsecret TECHNITIUMDNS_FQDN '{{.DEFAULT_TECHNITIUMDNS_FQDN}}' >/dev/null
+          prompt_nonsecret ROUTER01_HOSTNAME '{{.DEFAULT_ROUTER01_HOSTNAME}}' >/dev/null
+          prompt_nonsecret ROUTER01_IP '{{.DEFAULT_ROUTER01_IP}}' >/dev/null
+          prompt_nonsecret PROXMOX01_HOSTNAME '{{.DEFAULT_PROXMOX01_HOSTNAME}}' >/dev/null
+          prompt_nonsecret PROXMOX01_IP '{{.DEFAULT_PROXMOX01_IP}}' >/dev/null
+          prompt_nonsecret OMV01_HOSTNAME '{{.DEFAULT_OMV01_HOSTNAME}}' >/dev/null
+          prompt_nonsecret OMV01_IP '{{.DEFAULT_OMV01_IP}}' >/dev/null
+          prompt_nonsecret TECHNITIUM_AUTOMATION_USERNAME '{{.DEFAULT_TECHNITIUM_AUTOMATION_USERNAME}}' >/dev/null
+
+          upsert_env 'LXC_SEARCHDOMAIN' "$(grep -E '^CLOUDFLARE_DOMAIN=' "${env_file}" | tail -n 1 | cut -d'=' -f2-)" "${env_file}"
+          upsert_env 'LXC_NETWORK_CIDR' '24' "${env_file}"
+          upsert_env 'LXC_BRIDGE' 'vmbr0' "${env_file}"
+          upsert_env 'LXC_VLAN' '' "${env_file}"
+          upsert_env 'LXC_DNS_SERVER' "$(grep -E '^TECHNITIUMDNS_IP=' "${env_file}" | tail -n 1 | cut -d'=' -f2-)" "${env_file}"
+          upsert_env 'TECHNITIUMDNS_CID' '200' "${env_file}"
+          upsert_env 'TRAEFIK_CID' '201' "${env_file}"
+          upsert_env 'TECHNITIUMDNS_HOSTNAME' 'technitiumdns' "${env_file}"
+          upsert_env 'TRAEFIK_HOSTNAME' 'traefik' "${env_file}"
+          upsert_env 'TECHNITIUMDNS_CPU' '2' "${env_file}"
+          upsert_env 'TECHNITIUMDNS_RAM' '2048' "${env_file}"
+          upsert_env 'TECHNITIUMDNS_DISK' '8' "${env_file}"
+          upsert_env 'TRAEFIK_CPU' '2' "${env_file}"
+          upsert_env 'TRAEFIK_RAM' '2048' "${env_file}"
+          upsert_env 'TRAEFIK_DISK' '8' "${env_file}"
+
+          echo "Saved non-secret settings to ${env_file}"
+          echo "Git identity will use ${git_name} <${git_email}>"
+
+  inputs:gather:secrets:
+    desc: Gather and persist secret runtime settings under state/secrets
+    cmds:
+      - |
+          # ================================================================
+          # Task: inputs:gather:secrets
+          # Purpose:
+          #   Collect the sensitive settings required across GitHub, Proxmox,
+          #   and LXC workflows before any setup task begins.
+          # ================================================================
+          set -euo pipefail
+
+          secrets_file='{{.BOOTSTRAP_SECRETS_FILE}}'
+          lxc_secrets_file='{{.LXC_SECRETS_FILE}}'
+          mkdir -p "$(dirname "${secrets_file}")" "$(dirname "${lxc_secrets_file}")"
+          touch "${secrets_file}" "${lxc_secrets_file}"
+          chmod 600 "${secrets_file}" "${lxc_secrets_file}" || true
+
+          upsert_env() {
+            key="$1"
+            value="$2"
+            file="$3"
+            if grep -qE "^${key}=" "${file}"; then
+              awk -v key="${key}" -v value="${value}" '
+                BEGIN { updated = 0 }
+                $0 ~ "^" key "=" {
+                  print key "=" value
+                  updated = 1
+                  next
+                }
+                { print }
+                END {
+                  if (updated == 0) {
+                    print key "=" value
+                  }
+                }
+              ' "${file}" > "${file}.tmp"
+              mv "${file}.tmp" "${file}"
+            else
+              printf '%s=%s\n' "${key}" "${value}" >> "${file}"
+            fi
+          }
+
+          prompt_secret() {
+            key="$1"
+            prompt_text="$2"
+            current_value="$(grep -E "^${key}=" "${secrets_file}" | tail -n 1 | cut -d'=' -f2- || true)"
+            if [ -n "${current_value}" ]; then
+              return 0
+            fi
+            printf '%s' "${prompt_text}: " > /dev/tty
+            stty -echo < /dev/tty
+            read -r response < /dev/tty || true
+            stty echo < /dev/tty
+            printf '\n' > /dev/tty
+            if [ -z "${response}" ]; then
+              echo "${key} cannot be empty." >&2
+              exit 1
+            fi
+            upsert_env "${key}" "${response}" "${secrets_file}"
+          }
+
+          prompt_toggle() {
+            key="$1"
+            prompt_text="$2"
+            default_value="$3"
+            current_value="$(grep -E "^${key}=" "${secrets_file}" | tail -n 1 | cut -d'=' -f2- || true)"
+            if [ -n "${current_value}" ]; then
+              printf '%s' "${current_value}"
+              return 0
+            fi
+            printf '%s' "${prompt_text} [${default_value}]: " > /dev/tty
+            read -r response < /dev/tty || true
+            if [ -z "${response}" ]; then
+              response="${default_value}"
+            fi
+            response="$(printf '%s' "${response}" | tr '[:upper:]' '[:lower:]')"
+            upsert_env "${key}" "${response}" "${secrets_file}"
+            printf '%s' "${response}"
+          }
+
+          prompt_secret GITHUB_TOKEN 'Enter GitHub Fine-grained PAT'
+          prompt_toggle PVE_CREATE_PASSWORD 'Create or rotate a Proxmox password as part of bootstrap' 'n' >/dev/null
+          if grep -qE '^PVE_CREATE_PASSWORD=(y|yes|true|1)$' "${secrets_file}"; then
+            prompt_secret PVE_PASSWORD 'Enter Proxmox automation user password'
+          fi
+          prompt_secret LXC_ROOT_PASSWORD 'Enter LXC root password'
+          prompt_secret CLOUDFLARE_DNS_API_TOKEN 'Enter Cloudflare DNS API token'
+          prompt_secret TECHNITIUM_ADMIN_PASSWORD 'Enter Technitium admin password'
+          prompt_secret TECHNITIUM_AUTOMATION_PASSWORD 'Enter Technitium automation user password'
+
+          for key in LXC_ROOT_PASSWORD CLOUDFLARE_DNS_API_TOKEN TECHNITIUM_ADMIN_PASSWORD TECHNITIUM_AUTOMATION_PASSWORD; do
+            value="$(grep -E "^${key}=" "${secrets_file}" | tail -n 1 | cut -d'=' -f2- || true)"
+            if [ -n "${value}" ]; then
+              upsert_env "${key}" "${value}" "${lxc_secrets_file}"
+            fi
+          done
+
+          echo "Saved secret settings to ${secrets_file}"
+          echo "Mirrored LXC runtime secrets to ${lxc_secrets_file}"
+
+  inputs:summary:
+    desc: Show the current input collection file locations
+    cmds:
+      - |
+          set -euo pipefail
+          echo 'Homelab input collection is complete.'
+          echo 'Non-secret settings: {{.ENV_FILE}}'
+          echo 'Sensitive settings: {{.BOOTSTRAP_SECRETS_FILE}}'
+          echo 'LXC runtime secrets: {{.LXC_SECRETS_FILE}}'

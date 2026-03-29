@@ -1,0 +1,264 @@
+# ================================================================
+# File: ansible/playbooks/technitiumdns.yml
+# Purpose:
+#   Install, harden, and configure the Technitium DNS LXC for
+#   production-style homelab use.
+#
+# Notes:
+#   - The first play bootstraps Python and systemd service state.
+#   - The second play configures the Technitium API surface, security,
+#     server settings, zones, and records.
+#   - Cloudflare remains authoritative for public DNS.
+#   - Technitium provides internal DNS overrides for LAN clients only.
+#   - DHCP remains on MikroTik for now, so only fixed infrastructure PTRs
+#     are managed here.
+#   - API token bootstrap follows Technitium's documented administration
+#     endpoints for session listing and token creation.
+#   - Zone discovery and zone creation use the admin token to avoid
+#     permission issues during bootstrap.
+#   - Record management uses the automation token after explicit
+#     zone-level permissions are granted.
+#   - The effectivelywild.technitium_dns record module expects fully
+#     qualified record names rather than short relative labels.
+# ================================================================
+---
+- name: Bootstrap Python on the Technitium DNS LXC
+  hosts: lxc_technitiumdns
+  become: true
+  gather_facts: false
+
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+
+  tasks:
+    - name: Ensure Python is available for Ansible modules
+      ansible.builtin.raw: |
+        if command -v python3 >/dev/null 2>&1; then
+          exit 0
+        fi
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update
+        apt-get install -y python3 python3-apt
+      changed_when: false
+
+- name: Configure the Technitium DNS service host
+  hosts: lxc_technitiumdns
+  become: true
+  gather_facts: true
+
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    technitium_working_directory: /opt/technitium/dns
+    technitium_config_directory: /etc/dns
+    technitium_systemd_unit_path: /etc/systemd/system/dns-server.service
+    technitium_candidate_units:
+      - dns-server.service
+      - technitium-dns.service
+      - technitiumdns.service
+      - dns.service
+
+  tasks:
+    - name: Ensure required operating system packages are installed
+      ansible.builtin.apt:
+        name:
+          - curl
+          - ca-certificates
+        state: present
+        update_cache: true
+
+    - name: Ensure the Technitium data directory exists
+      ansible.builtin.file:
+        path: "{{ technitium_config_directory }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Check whether the Technitium application directory exists
+      ansible.builtin.stat:
+        path: "{{ technitium_working_directory }}/DnsServerApp.dll"
+      register: technitium_app_dll
+
+    - name: Fail when Technitium DNS is not installed in the expected location
+      ansible.builtin.fail:
+        msg: >-
+          Technitium DNS Server does not appear to be installed at
+          {{ technitium_working_directory }}/DnsServerApp.dll.
+          Check what the community script installed before running this
+          configuration task again.
+      when: not technitium_app_dll.stat.exists
+
+    - name: Gather service facts
+      ansible.builtin.service_facts:
+
+    - name: Select an existing Technitium service unit when present
+      ansible.builtin.set_fact:
+        technitium_service_name: "{{ item }}"
+      loop: "{{ technitium_candidate_units }}"
+      when:
+        - technitium_service_name is not defined
+        - item in ansible_facts.services
+
+    - name: Install the upstream-compatible Technitium systemd unit when no suitable unit exists
+      ansible.builtin.copy:
+        dest: "{{ technitium_systemd_unit_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Technitium DNS Server
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          WorkingDirectory=/opt/technitium/dns
+          ExecStart=/usr/bin/dotnet /opt/technitium/dns/DnsServerApp.dll /etc/dns
+          Restart=always
+          RestartSec=10
+          SyslogIdentifier=dns-server
+          LimitNOFILE=65536
+
+          [Install]
+          WantedBy=multi-user.target
+      register: technitium_unit_file
+      when: technitium_service_name is not defined
+
+    - name: Set the Technitium service name to the managed upstream-compatible unit
+      ansible.builtin.set_fact:
+        technitium_service_name: dns-server.service
+      when: technitium_service_name is not defined
+
+    - name: Reload systemd when the Technitium unit file changed
+      ansible.builtin.systemd:
+        daemon_reload: true
+      when:
+        - technitium_unit_file is defined
+        - technitium_unit_file.changed
+
+    - name: Ensure the Technitium DNS service is enabled and started
+      ansible.builtin.systemd:
+        name: "{{ technitium_service_name }}"
+        enabled: true
+        state: started
+
+    - name: Wait for the Technitium web console to respond on port 5380
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        port: 5380
+        delay: 2
+        timeout: 60
+        state: started
+
+- name: Configure Technitium DNS via API for internal homelab overrides
+  hosts: lxc_technitiumdns
+  gather_facts: false
+
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+
+  collections:
+    - effectivelywild.technitium_dns
+
+  vars:
+    repo_root_dir: "{{ playbook_dir | dirname | dirname }}"
+    technitium_local_secrets_file: "{{ repo_root_dir }}/state/secrets/lxc/lxc.secrets.env"
+    technitium_api_url: "http://{{ ansible_host | default(inventory_hostname) }}"
+    technitium_api_port: 5380
+    technitium_domain: "{{ homelab_domain }}"
+    technitium_reverse_zone_name: 88.168.192.in-addr.arpa
+    technitium_reverse_zone_network: 192.168.88.0/24
+    technitium_server_fqdn_value: "{{ technitium_server_fqdn | default('technitiumdns.' ~ homelab_domain) }}"
+    technitium_admin_username: admin
+    technitium_default_admin_password: admin
+    technitium_automation_display_name: Technitium Ansible Automation
+    technitium_automation_token_name: ansible-automation
+
+    technitium_forwarders:
+      - 1.1.1.1
+      - 1.0.0.1
+
+    technitium_section_permissions:
+      - section: Dashboard
+        canView: true
+        canModify: false
+        canDelete: false
+      - section: Zones
+        canView: true
+        canModify: true
+        canDelete: true
+      - section: Settings
+        canView: true
+        canModify: true
+        canDelete: false
+      - section: Cache
+        canView: true
+        canModify: true
+        canDelete: true
+
+    technitium_zone_permissions:
+      - "{{ technitium_domain }}"
+      - "{{ technitium_reverse_zone_name }}"
+
+    technitium_primary_records:
+      - name: "{{ technitium_server_fqdn_value }}"
+        zone: "{{ technitium_domain }}"
+        type: A
+        ipAddress: "{{ ansible_host }}"
+      - name: "dns01.{{ technitium_domain }}"
+        zone: "{{ technitium_domain }}"
+        type: CNAME
+        cname: "{{ technitium_server_fqdn_value }}"
+      - name: "traefik.{{ technitium_domain }}"
+        zone: "{{ technitium_domain }}"
+        type: A
+        ipAddress: "{{ hostvars['traefik'].ansible_host }}"
+      - name: "*.apps.{{ technitium_domain }}"
+        zone: "{{ technitium_domain }}"
+        type: A
+        ipAddress: "{{ hostvars['traefik'].ansible_host }}"
+      - name: "router01.{{ technitium_domain }}"
+        zone: "{{ technitium_domain }}"
+        type: A
+        ipAddress: "{{ hostvars['router01.fouchger.uk'].ansible_host | default('192.168.88.1') }}"
+      - name: "proxmox01.{{ technitium_domain }}"
+        zone: "{{ technitium_domain }}"
+        type: A
+        ipAddress: "{{ hostvars['proxmox01.fouchger.uk'].ansible_host | default('192.168.88.250') }}"
+      - name: "omv01.{{ technitium_domain }}"
+        zone: "{{ technitium_domain }}"
+        type: A
+        ipAddress: "{{ hostvars['omv01.fouchger.uk'].ansible_host | default('192.168.88.251') }}"
+
+    technitium_ptr_records:
+      - name: "2.{{ technitium_reverse_zone_name }}"
+        zone: "{{ technitium_reverse_zone_name }}"
+        ptrName: "{{ technitium_server_fqdn_value }}"
+      - name: "1.{{ technitium_reverse_zone_name }}"
+        zone: "{{ technitium_reverse_zone_name }}"
+        ptrName: "router01.{{ technitium_domain }}"
+      - name: "250.{{ technitium_reverse_zone_name }}"
+        zone: "{{ technitium_reverse_zone_name }}"
+        ptrName: "proxmox01.{{ technitium_domain }}"
+      - name: "251.{{ technitium_reverse_zone_name }}"
+        zone: "{{ technitium_reverse_zone_name }}"
+        ptrName: "omv01.{{ technitium_domain }}"
+
+  tasks:
+    - name: Establish a working Technitium admin session
+      ansible.builtin.import_tasks: ../tasks/technitium/auth.yml
+
+    - name: Ensure the Technitium automation account and permissions are aligned
+      ansible.builtin.import_tasks: ../tasks/technitium/automation-user.yml
+
+    - name: Resolve the Technitium automation API token for this run
+      ansible.builtin.import_tasks: ../tasks/technitium/token.yml
+
+    - name: Apply the Technitium server baseline settings
+      ansible.builtin.import_tasks: ../tasks/technitium/settings.yml
+
+    - name: Ensure the Technitium managed zones and permissions exist
+      ansible.builtin.import_tasks: ../tasks/technitium/zones.yml
+
+    - name: Ensure the Technitium managed records are present
+      ansible.builtin.import_tasks: ../tasks/technitium/records.yml

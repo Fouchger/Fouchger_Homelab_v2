@@ -1,0 +1,79 @@
+# ================================================================
+# File: ansible/tasks/technitium/zones.yml
+# Purpose:
+#   Ensure the authoritative forward and reverse zones exist and grant
+#   the automation user modify access to them.
+# ================================================================
+---
+- name: List authoritative zones currently hosted on Technitium
+  ansible.builtin.uri:
+    url: "{{ technitium_api_url }}:{{ technitium_api_port }}/api/zones/list?token={{ technitium_admin_api_token | urlencode }}"
+    method: GET
+    return_content: true
+    validate_certs: false
+  register: technitium_zone_list_response
+  failed_when: technitium_zone_list_response.json.status | default('error') != 'ok'
+  no_log: true
+
+- name: Build a normalised list of existing Technitium zone names
+  ansible.builtin.set_fact:
+    technitium_existing_zone_names: >-
+      {{
+        technitium_zone_list_response.json.response.zones
+        | default([], true)
+        | map(attribute='name')
+        | list
+      }}
+  no_log: true
+
+- name: Ensure the internal override zone exists
+  ansible.builtin.uri:
+    url: "{{ technitium_api_url }}:{{ technitium_api_port }}/api/zones/create"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      token: "{{ technitium_admin_api_token }}"
+      zone: "{{ technitium_domain }}"
+      type: Primary
+    return_content: true
+    validate_certs: false
+  register: technitium_create_primary_zone
+  failed_when: technitium_create_primary_zone.json.status | default('error') != 'ok'
+  changed_when: technitium_create_primary_zone.json.status | default('') == 'ok'
+  when: technitium_domain not in technitium_existing_zone_names
+  no_log: true
+
+- name: Ensure the local reverse zone exists
+  ansible.builtin.uri:
+    url: "{{ technitium_api_url }}:{{ technitium_api_port }}/api/zones/create"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      token: "{{ technitium_admin_api_token }}"
+      zone: "{{ technitium_reverse_zone_network }}"
+      type: Primary
+    return_content: true
+    validate_certs: false
+  register: technitium_create_reverse_zone
+  failed_when: technitium_create_reverse_zone.json.status | default('error') != 'ok'
+  changed_when: technitium_create_reverse_zone.json.status | default('') == 'ok'
+  when: technitium_reverse_zone_name not in technitium_existing_zone_names
+  no_log: true
+
+- name: Grant the automation user modify access to managed zones
+  ansible.builtin.uri:
+    url: "{{ technitium_api_url }}:{{ technitium_api_port }}/api/zones/permissions/set"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      token: "{{ technitium_admin_api_token }}"
+      zone: "{{ item }}"
+      userPermissions: "{{ technitium_automation_username }}|true|true|true"
+    return_content: true
+    validate_certs: false
+  register: technitium_zone_permissions_result
+  failed_when: technitium_zone_permissions_result.json.status | default('error') != 'ok'
+  loop: "{{ technitium_zone_permissions }}"
+  loop_control:
+    label: "{{ item }}"
+  no_log: true

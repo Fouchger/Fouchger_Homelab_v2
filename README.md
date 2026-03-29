@@ -35,26 +35,3 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/Fouchger/Fouchger_Homela
 ```bash
 ./install.sh
 ```
-
-## Key Documentation
-
-Primary architecture and build documents are under `docs/architecture/`, including:
-
-- `HOMELAB.md`
-- `ENVIRONMENT-BASELINE.md`
-- `network-design.md`
-- `mikrotik-hap-ax2-design.md`
-- `phase-1-build-plan.md`
-- `ip-allocation-plan.md`
-- `service-catalogue.md`
-- `internet-exposure-design.md`
-- `backup-restore.md`
-- `automation-model.md`
-- `implementation-scaffold.md`
-- `kubernetes-platform-design.md`
-- `naming-standards.md`
-- `INFORMATION-REQUIRED.md`
-
-## Notes
-
-This repository is intended to evolve from architecture-first planning into implementation-aligned automation. Where trade-offs exist, priority should be given to repeatability, recoverability, and clear operational standards.

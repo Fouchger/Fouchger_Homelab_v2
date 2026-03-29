@@ -1,0 +1,17 @@
+# ================================================================
+# File: packer/proxmox/talos/files/schematic.yaml
+# Purpose:
+#   Define the Talos Image Factory schematic used for Proxmox template
+#   generation in this repository.
+#
+# Notes:
+#   - Keep the base image intentionally thin.
+#   - qemu-guest-agent is included because Proxmox integration benefits
+#     from the extension when guest agent support is enabled.
+#   - Add further system extensions only when there is a clear node-level
+#     requirement because each extension becomes part of the immutable OS.
+# ================================================================
+customization:
+  systemExtensions:
+    officialExtensions:
+      - siderolabs/qemu-guest-agent

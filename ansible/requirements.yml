@@ -1,0 +1,13 @@
+# ================================================================
+# File: ansible/requirements.yml
+# Purpose:
+#   Declare external Ansible collections required by this repository.
+#
+# Notes:
+#   - effectivelywild.technitium_dns provides API-driven management
+#     modules for Technitium DNS Server.
+# ================================================================
+---
+collections:
+  - name: effectivelywild.technitium_dns
+    version: ">=1.1.2,<2.0.0"
